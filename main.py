@@ -19,17 +19,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # -------------------------
 # Environment variables (set these in Replit Secrets)
 # -------------------------
-# SESSION_STRING  - required (string)
-# API_ID          - required (int)
-# API_HASH        - required (string)
-# SOURCE_CHANNELS - e.g. "-1001111111111,-1002222222222" or "channel1,channel2"
-# TARGET_CHANNEL  - e.g. -1003333333333 or @mychannel
-# ACTIVE_HOURS    - e.g. "8,22" (UTC) default "0,24"
-# TZ_OFFSET_HOURS - optional integer to shift time (e.g. 3 for +3) default "0"
-# DB_PATH         - optional filename for sqlite DB (default "processed.db")
-# PORT            - optional port for Flask (Replit supplies PORT env)
-# -------------------------
-
 def getenv_required(name):
     v = os.environ.get(name)
     if not v:
@@ -46,17 +35,17 @@ TZ_OFFSET_HOURS = int(os.environ.get("TZ_OFFSET_HOURS", "0"))
 DB_PATH = os.environ.get("DB_PATH", "processed.db")
 PORT = int(os.environ.get("PORT", os.environ.get("REPL_PORT", 8080)))
 
-# Parse
 SOURCE_CHANNELS = [s.strip() for s in SOURCE_CHANNELS_RAW.split(",") if s.strip()]
 try:
     start_hour, end_hour = (int(x.strip()) for x in ACTIVE_HOURS_RAW.split(","))
 except Exception:
     start_hour, end_hour = 0, 24
 
-# Telethon client
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# Database for processed messages (prevents duplicates)
+# -------------------------
+# Database for processed messages
+# -------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -85,7 +74,9 @@ def mark_processed(chat_id, message_id):
     conn.commit()
     conn.close()
 
-# Text cleaning (remove links and mentions)
+# -------------------------
+# Text cleaning
+# -------------------------
 URL_PATTERN = re.compile(r"(https?://\S+|t\.me/\S+|\S+\.telegram\.me/\S+)")
 MENTION_PATTERN = re.compile(r"@[\w_]+")
 
@@ -113,7 +104,9 @@ def strip_entities(message):
     filtered = ''.join(chars)
     return clean_text(filtered), None
 
-# Active hours check (UTC + optional TZ_OFFSET_HOURS)
+# -------------------------
+# Active hours check
+# -------------------------
 def is_active_now():
     now = datetime.utcnow() + timedelta(hours=TZ_OFFSET_HOURS)
     h = now.hour
@@ -122,7 +115,9 @@ def is_active_now():
     else:
         return h >= start_hour or h < end_hour
 
-# Handler for new messages in source channels
+# -------------------------
+# Handler for new messages
+# -------------------------
 @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
 async def handler(event):
     try:
@@ -154,19 +149,44 @@ async def handler(event):
     except Exception as e:
         logging.exception("Error processing message: %s", e)
 
-# Bot background runner (runs Telethon client in separate thread)
+# -------------------------
+# Start bot
+# -------------------------
 def run_telethon():
     async def start_and_run():
         init_db()
         await client.start()
+        logging.info("✅ Connected to Telegram API")
+
+        # Send startup message to confirm access
+        try:
+            await client.send_message(TARGET_CHANNEL, "🤖 Bot started successfully and is now listening for new posts.")
+        except Exception as e:
+            logging.error(f"❌ Cannot send message to target channel: {e}")
+
+        # Preload entities for all source channels
+        for src in SOURCE_CHANNELS:
+            try:
+                await client.get_entity(src)
+                logging.info(f"✅ Loaded entity for {src}")
+            except Exception as e:
+                logging.warning(f"⚠️ Could not load entity for {src}: {e}")
+
+        # List available dialogs for debugging
+        async for d in client.iter_dialogs():
+            logging.info(f"📋 Dialog visible: {d.name} — {d.id}")
+
         logging.info("Telethon client started. Sources: %s Target: %s", SOURCE_CHANNELS, TARGET_CHANNEL)
         await client.run_until_disconnected()
+
     try:
         asyncio.run(start_and_run())
     except Exception as e:
         logging.exception("Telethon runner stopped: %s", e)
 
-# Flask web app for UptimeRobot pings / Replit health
+# -------------------------
+# Flask app (for UptimeRobot/Replit)
+# -------------------------
 app = Flask(__name__)
 
 @app.route("/")
