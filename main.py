@@ -17,7 +17,7 @@ from telethon.tl.types import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # -------------------------
-# Environment variables (set these in Replit Secrets)
+# Environment variables (Replit Secrets)
 # -------------------------
 def getenv_required(name):
     v = os.environ.get(name)
@@ -44,7 +44,7 @@ except Exception:
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 # -------------------------
-# Database for processed messages
+# Database setup
 # -------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -116,7 +116,7 @@ def is_active_now():
         return h >= start_hour or h < end_hour
 
 # -------------------------
-# Handler for new messages
+# New message handler
 # -------------------------
 @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
 async def handler(event):
@@ -137,20 +137,20 @@ async def handler(event):
         if m.media:
             caption = text_clean if text_clean else None
             await client.send_file(TARGET_CHANNEL, m.media, caption=caption)
-            logging.info("Media sent from %s:%s to %s", chat_id, msg_id, TARGET_CHANNEL)
+            logging.info("📤 Media sent from %s:%s to %s", chat_id, msg_id, TARGET_CHANNEL)
         elif text_clean:
             await client.send_message(TARGET_CHANNEL, text_clean)
-            logging.info("Text sent from %s:%s to %s", chat_id, msg_id, TARGET_CHANNEL)
+            logging.info("📤 Text sent from %s:%s to %s", chat_id, msg_id, TARGET_CHANNEL)
         else:
-            logging.info("Message %s:%s had no content after cleaning; skipped", chat_id, msg_id)
+            logging.info("🟡 Message %s:%s had no content after cleaning; skipped", chat_id, msg_id)
 
         mark_processed(chat_id, msg_id)
 
     except Exception as e:
-        logging.exception("Error processing message: %s", e)
+        logging.exception("❌ Error processing message: %s", e)
 
 # -------------------------
-# Start bot
+# Start Telethon + Diagnostics
 # -------------------------
 def run_telethon():
     async def start_and_run():
@@ -158,34 +158,35 @@ def run_telethon():
         await client.start()
         logging.info("✅ Connected to Telegram API")
 
-        # Send startup message to confirm access
+        # Test sending to target
         try:
-            await client.send_message(TARGET_CHANNEL, "🤖 Bot started successfully and is now listening for new posts.")
+            await client.send_message(TARGET_CHANNEL, "🤖 Bot started successfully and is listening.")
         except Exception as e:
             logging.error(f"❌ Cannot send message to target channel: {e}")
 
-        # Preload entities for all source channels
+        # Preload and check all sources
         for src in SOURCE_CHANNELS:
             try:
-                await client.get_entity(src)
-                logging.info(f"✅ Loaded entity for {src}")
+                entity = await client.get_entity(src)
+                logging.info(f"✅ Loaded entity for {src} — ID: {entity.id}")
             except Exception as e:
                 logging.warning(f"⚠️ Could not load entity for {src}: {e}")
 
-        # List available dialogs for debugging
+        # List all visible dialogs
+        logging.info("📋 Listing all dialogs visible to this session:")
         async for d in client.iter_dialogs():
-            logging.info(f"📋 Dialog visible: {d.name} — {d.id}")
+            logging.info(f"   - {d.name} — {d.id}")
 
-        logging.info("Telethon client started. Sources: %s Target: %s", SOURCE_CHANNELS, TARGET_CHANNEL)
+        logging.info("🟢 Telethon client started. Sources: %s | Target: %s", SOURCE_CHANNELS, TARGET_CHANNEL)
         await client.run_until_disconnected()
 
     try:
         asyncio.run(start_and_run())
     except Exception as e:
-        logging.exception("Telethon runner stopped: %s", e)
+        logging.exception("💥 Telethon runner stopped: %s", e)
 
 # -------------------------
-# Flask app (for UptimeRobot/Replit)
+# Flask app for Replit / UptimeRobot
 # -------------------------
 app = Flask(__name__)
 
@@ -197,7 +198,7 @@ def start_flask():
     app.run(host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
-    logging.info("Starting bot: launching Telethon in background thread and Flask server (port %s)", PORT)
+    logging.info("🚀 Starting bot: launching Telethon and Flask (port %s)", PORT)
     t = threading.Thread(target=run_telethon, daemon=True)
     t.start()
     start_flask()
