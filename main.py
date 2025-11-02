@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from flask import Flask
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.utils import get_peer_id
 from telethon.tl.types import (
     MessageEntityUrl, MessageEntityTextUrl,
     MessageEntityMention, MessageEntityMentionName
@@ -18,7 +17,7 @@ from telethon.tl.types import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # -------------------------
-# Environment variables (set these in Replit Secrets)
+# Environment variables
 # -------------------------
 def getenv_required(name):
     v = os.environ.get(name)
@@ -35,8 +34,8 @@ ACTIVE_HOURS_RAW = os.environ.get("ACTIVE_HOURS", "0,24")
 TZ_OFFSET_HOURS = int(os.environ.get("TZ_OFFSET_HOURS", "0"))
 DB_PATH = os.environ.get("DB_PATH", "processed.db")
 PORT = int(os.environ.get("PORT", os.environ.get("REPL_PORT", 8080)))
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))  # <-- нова змінна
 
-# Convert source channels (support both @name and numeric IDs)
 SOURCE_CHANNELS = []
 for s in SOURCE_CHANNELS_RAW.split(","):
     s = s.strip()
@@ -55,7 +54,7 @@ except Exception:
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 # -------------------------
-# Database for processed messages
+# Database
 # -------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -116,7 +115,7 @@ def strip_entities(message):
     return clean_text(filtered), None
 
 # -------------------------
-# Active hours check
+# Active hours
 # -------------------------
 def is_active_now():
     now = datetime.utcnow() + timedelta(hours=TZ_OFFSET_HOURS)
@@ -127,15 +126,11 @@ def is_active_now():
         return h >= start_hour or h < end_hour
 
 # -------------------------
-# Handler for new messages
+# Message forwarding
 # -------------------------
-@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
-async def handler(event):
+async def forward_message(msg, chat_id):
     try:
-        m = event.message
-        chat_id = event.chat_id
-        msg_id = m.id
-
+        msg_id = msg.id
         if is_processed(chat_id, msg_id):
             return
 
@@ -143,34 +138,46 @@ async def handler(event):
             logging.info("Outside active hours; skipping message %s:%s", chat_id, msg_id)
             return
 
-        text_clean, _ = strip_entities(m)
-
-        if m.media:
+        text_clean, _ = strip_entities(msg)
+        if msg.media:
             caption = text_clean if text_clean else None
-            await client.send_file(TARGET_CHANNEL, m.media, caption=caption)
-            logging.info("Media sent from %s:%s to %s", chat_id, msg_id, TARGET_CHANNEL)
+            await client.send_file(TARGET_CHANNEL, msg.media, caption=caption)
         elif text_clean:
             await client.send_message(TARGET_CHANNEL, text_clean)
-            logging.info("Text sent from %s:%s to %s", chat_id, msg_id, TARGET_CHANNEL)
         else:
-            logging.info("Message %s:%s had no content after cleaning; skipped", chat_id, msg_id)
+            return
 
+        logging.info(f"✅ Forwarded message {chat_id}:{msg_id}")
         mark_processed(chat_id, msg_id)
-
     except Exception as e:
-        logging.exception("Error processing message: %s", e)
+        logging.exception(f"Error forwarding {chat_id}:{msg.id}: {e}")
 
 # -------------------------
-# Debug visibility
+# Poller (interval via env)
 # -------------------------
-@client.on(events.NewMessage())
-async def debug_all(event):
-    try:
-        chat = await event.get_chat()
-        chat_name = getattr(chat, 'title', None) or getattr(chat, 'username', None) or str(event.chat_id)
-        logging.info(f"📨 DEBUG: New message detected from {chat_name} (ID: {event.chat_id})")
-    except Exception as e:
-        logging.warning(f"⚠️ Debug error while resolving chat info: {e}")
+async def poll_channels():
+    while True:
+        try:
+            for src in SOURCE_CHANNELS:
+                try:
+                    entity = await client.get_entity(src)
+                    async for msg in client.iter_messages(entity, limit=5):
+                        if not is_processed(msg.chat_id, msg.id):
+                            await forward_message(msg, msg.chat_id)
+                except Exception as e:
+                    logging.warning(f"⚠️ Poller failed for {src}: {e}")
+            logging.info(f"⏱ Poll cycle complete. Sleeping {POLL_INTERVAL} seconds...")
+            await asyncio.sleep(POLL_INTERVAL)
+        except Exception as e:
+            logging.error(f"Poller loop error: {e}")
+            await asyncio.sleep(60)
+
+# -------------------------
+# Instant event handler
+# -------------------------
+@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
+async def handler(event):
+    await forward_message(event.message, event.chat_id)
 
 # -------------------------
 # Start bot
@@ -181,39 +188,20 @@ def run_telethon():
         await client.start()
         logging.info("✅ Connected to Telegram API")
 
-        # Try to preload all channels
         for src in SOURCE_CHANNELS:
             try:
-                if isinstance(src, int):
-                    await asyncio.sleep(1)
-                    entity_id = get_peer_id(src)
-                    await client.get_entity(entity_id)
-                else:
-                    await client.get_entity(src)
+                await client.get_entity(src)
                 logging.info(f"✅ Loaded entity for {src}")
             except Exception as e:
                 logging.warning(f"⚠️ Could not load entity for {src}: {e}")
-                await asyncio.sleep(3)
-                try:
-                    await client.get_entity(src)
-                    logging.info(f"✅ Retried and loaded entity for {src}")
-                except Exception as e2:
-                    logging.error(f"❌ Failed to load entity for {src}: {e2}")
 
-        # List dialogs for debugging
-        async for d in client.iter_dialogs():
-            logging.info(f"📋 Dialog visible: {d.name} — {d.id}")
-
-        logging.info(f"🟢 Telethon client started. Sources: {SOURCE_CHANNELS} | Target: {TARGET_CHANNEL}")
+        asyncio.create_task(poll_channels())
         await client.run_until_disconnected()
 
-    try:
-        asyncio.run(start_and_run())
-    except Exception as e:
-        logging.exception("Telethon runner stopped: %s", e)
+    asyncio.run(start_and_run())
 
 # -------------------------
-# Flask app
+# Flask
 # -------------------------
 app = Flask(__name__)
 
