@@ -5,7 +5,8 @@ import logging
 import sqlite3
 import threading
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 from flask import Flask
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -118,12 +119,42 @@ def strip_entities(message):
 # Active hours
 # -------------------------
 def is_active_now():
-    now = datetime.utcnow() + timedelta(hours=TZ_OFFSET_HOURS)
+    now = datetime.now(timezone.utc) + timedelta(hours=TZ_OFFSET_HOURS)
     h = now.hour
     if start_hour <= end_hour:
         return start_hour <= h < end_hour
     else:
         return h >= start_hour or h < end_hour
+
+# -------------------------
+# Album buffer
+# -------------------------
+album_buffer = defaultdict(list)
+
+async def forward_album(messages, chat_id):
+    try:
+        if not is_active_now():
+            logging.info("Outside active hours; skipping album %s", chat_id)
+            return
+
+        media_files = []
+        caption = None
+
+        for m in messages:
+            if m.media:
+                media_files.append(m.media)
+            if not caption and m.message:
+                caption = clean_text(m.message)
+
+        if caption and len(caption) > 1024:
+            caption = caption[:1021] + "..."
+
+        await client.send_file(TARGET_CHANNEL, media_files, caption=caption)
+        logging.info(f"📸 Forwarded album ({len(media_files)} files) from {chat_id}")
+        for m in messages:
+            mark_processed(chat_id, m.id)
+    except Exception as e:
+        logging.exception(f"Error forwarding album from {chat_id}: {e}")
 
 # -------------------------
 # Message forwarding
@@ -138,9 +169,17 @@ async def forward_message(msg, chat_id):
             logging.info("Outside active hours; skipping message %s:%s", chat_id, msg_id)
             return
 
+        # Альбоми
+        if msg.grouped_id:
+            album_buffer[msg.grouped_id].append(msg)
+            await asyncio.sleep(2)
+            if len(album_buffer[msg.grouped_id]) > 1:
+                group = album_buffer.pop(msg.grouped_id)
+                await forward_album(group, chat_id)
+            return
+
         text_clean, _ = strip_entities(msg)
 
-        # Обрізаємо довгі підписи, щоб уникнути MediaCaptionTooLongError
         if text_clean and len(text_clean) > 1024:
             logging.warning(f"✂️ Caption too long ({len(text_clean)} chars). Truncating...")
             text_clean = text_clean[:1021] + "..."
@@ -179,7 +218,7 @@ async def poll_channels():
             await asyncio.sleep(60)
 
 # -------------------------
-# Instant event handler
+# Event handler
 # -------------------------
 @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
 async def handler(event):
