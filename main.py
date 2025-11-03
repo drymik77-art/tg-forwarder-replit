@@ -96,16 +96,34 @@ AD_KEYWORDS = [
 ]
 
 def is_advertisement(text):
-    """Перевіряє, чи схоже повідомлення на рекламу."""
+    """Перевіряє, чи схоже повідомлення на рекламу або платіжні реквізити."""
     if not text:
         return False
     lower = text.lower()
 
+    # 🔹 1. Ключові слова реклами
     for k in AD_KEYWORDS:
         if k in lower:
             logging.info(f"🚫 Blocked ad post (keyword: '{k}')")
             return True
 
+    # 🔹 2. Платіжні сервіси
+    payment_keywords = [
+        "monobank", "mono", "privatbank", "privat24", "paypal", "liqpay",
+        "wise", "revolut", "binance", "bitcoin", "crypto", "usdt", "btc", "eth",
+        "iban", "iban:", "card", "карта", "картка", "переказ", "рахунок", "донат", "donate"
+    ]
+    for k in payment_keywords:
+        if k in lower:
+            logging.info(f"🚫 Blocked payment-related post (keyword: '{k}')")
+            return True
+
+    # 🔹 3. Номери банківських карт
+    if re.search(r"\b\d{16}\b", lower) or re.search(r"\b\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\b", lower):
+        logging.info("🚫 Blocked post with possible card number")
+        return True
+
+    # 🔹 4. Забагато посилань
     if len(re.findall(r"https?://|t\.me/", lower)) >= 2:
         logging.info("🚫 Blocked post with multiple links")
         return True
@@ -123,7 +141,7 @@ def clean_text(text):
     text = re.sub(r'[ \t]{2,}', ' ', text)
     text = text.strip()
 
-    # Видаляємо підпис типу "Україна Live" або "Новини 24" або з "підписатися"
+    # Видаляємо короткі підписи типу "Україна Live" або "Новини 24" чи з "підписатися"
     lines = text.split("\n")
     if len(lines) > 1:
         last_line = lines[-1].strip().lower()
@@ -178,9 +196,9 @@ async def forward_message(msg, chat_id):
 
         text_clean, _ = strip_entities(msg)
 
-        # 🔎 Перевірка на рекламу
+        # 🔎 Перевірка на рекламу або платіж
         if is_advertisement(text_clean):
-            logging.info(f"🚫 Skipped ad message from {chat_id}:{msg.id}")
+            logging.info(f"🚫 Skipped ad/payment message from {chat_id}:{msg.id}")
             return
 
         # ✂️ Обрізаємо довгі підписи
