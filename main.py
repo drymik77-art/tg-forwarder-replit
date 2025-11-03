@@ -5,8 +5,7 @@ import logging
 import sqlite3
 import threading
 import asyncio
-from datetime import datetime, timedelta, timezone
-from collections import defaultdict
+from datetime import datetime, timedelta
 from flask import Flask
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -86,19 +85,57 @@ def mark_processed(chat_id, message_id):
     conn.close()
 
 # -------------------------
-# Text cleaning
+# Text cleaning & ad filter
 # -------------------------
 URL_PATTERN = re.compile(r"(https?://\S+|t\.me/\S+|\S+\.telegram\.me/\S+)")
 MENTION_PATTERN = re.compile(r"@[\w_]+")
 
+AD_KEYWORDS = [
+    "підписуйся", "підписка", "підпишись", "на канал", "канал", "subscribe",
+    "join", "follow", "promo", "співпраця", "реклама", "sale", "знижка", "shop"
+]
+
+def is_advertisement(text):
+    """Перевіряє, чи схоже повідомлення на рекламу."""
+    if not text:
+        return False
+    lower = text.lower()
+
+    for k in AD_KEYWORDS:
+        if k in lower:
+            logging.info(f"🚫 Blocked ad post (keyword: '{k}')")
+            return True
+
+    if len(re.findall(r"https?://|t\.me/", lower)) >= 2:
+        logging.info("🚫 Blocked post with multiple links")
+        return True
+
+    return False
+
 def clean_text(text):
+    """Очищує повідомлення: видаляє посилання, згадки, підписи."""
     if not text:
         return text
+
     text = URL_PATTERN.sub("", text)
     text = MENTION_PATTERN.sub("", text)
     text = re.sub(r'\n\s*\n+', '\n\n', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
-    return text.strip()
+    text = text.strip()
+
+    # Видаляємо підпис типу "Україна Live" або "Новини 24" або з "підписатися"
+    lines = text.split("\n")
+    if len(lines) > 1:
+        last_line = lines[-1].strip().lower()
+        if (
+            len(last_line.split()) <= 5 and
+            (not re.search(r"[.!?,:;]", last_line) or "підписатися" in last_line)
+        ):
+            logging.info(f"🧹 Removed possible channel signature: '{lines[-1]}'")
+            lines = lines[:-1]
+            text = "\n".join(lines).strip()
+
+    return text
 
 def strip_entities(message):
     text = message.message or ""
@@ -119,42 +156,12 @@ def strip_entities(message):
 # Active hours
 # -------------------------
 def is_active_now():
-    now = datetime.now(timezone.utc) + timedelta(hours=TZ_OFFSET_HOURS)
+    now = datetime.utcnow() + timedelta(hours=TZ_OFFSET_HOURS)
     h = now.hour
     if start_hour <= end_hour:
         return start_hour <= h < end_hour
     else:
         return h >= start_hour or h < end_hour
-
-# -------------------------
-# Album buffer
-# -------------------------
-album_buffer = defaultdict(list)
-
-async def forward_album(messages, chat_id):
-    try:
-        if not is_active_now():
-            logging.info("Outside active hours; skipping album %s", chat_id)
-            return
-
-        media_files = []
-        caption = None
-
-        for m in messages:
-            if m.media:
-                media_files.append(m.media)
-            if not caption and m.message:
-                caption = clean_text(m.message)
-
-        if caption and len(caption) > 1024:
-            caption = caption[:1021] + "..."
-
-        await client.send_file(TARGET_CHANNEL, media_files, caption=caption)
-        logging.info(f"📸 Forwarded album ({len(media_files)} files) from {chat_id}")
-        for m in messages:
-            mark_processed(chat_id, m.id)
-    except Exception as e:
-        logging.exception(f"Error forwarding album from {chat_id}: {e}")
 
 # -------------------------
 # Message forwarding
@@ -169,17 +176,14 @@ async def forward_message(msg, chat_id):
             logging.info("Outside active hours; skipping message %s:%s", chat_id, msg_id)
             return
 
-        # Альбоми
-        if msg.grouped_id:
-            album_buffer[msg.grouped_id].append(msg)
-            await asyncio.sleep(2)
-            if len(album_buffer[msg.grouped_id]) > 1:
-                group = album_buffer.pop(msg.grouped_id)
-                await forward_album(group, chat_id)
-            return
-
         text_clean, _ = strip_entities(msg)
 
+        # 🔎 Перевірка на рекламу
+        if is_advertisement(text_clean):
+            logging.info(f"🚫 Skipped ad message from {chat_id}:{msg.id}")
+            return
+
+        # ✂️ Обрізаємо довгі підписи
         if text_clean and len(text_clean) > 1024:
             logging.warning(f"✂️ Caption too long ({len(text_clean)} chars). Truncating...")
             text_clean = text_clean[:1021] + "..."
@@ -218,7 +222,7 @@ async def poll_channels():
             await asyncio.sleep(60)
 
 # -------------------------
-# Event handler
+# Instant event handler
 # -------------------------
 @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
 async def handler(event):
