@@ -34,7 +34,7 @@ ACTIVE_HOURS_RAW = os.environ.get("ACTIVE_HOURS", "0,24")
 TZ_OFFSET_HOURS = int(os.environ.get("TZ_OFFSET_HOURS", "0"))
 DB_PATH = os.environ.get("DB_PATH", "processed.db")
 PORT = int(os.environ.get("PORT", os.environ.get("REPL_PORT", 8080)))
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))  # <-- нова змінна
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))
 
 SOURCE_CHANNELS = []
 for s in SOURCE_CHANNELS_RAW.split(","):
@@ -139,6 +139,12 @@ async def forward_message(msg, chat_id):
             return
 
         text_clean, _ = strip_entities(msg)
+
+        # Обрізаємо довгі підписи, щоб уникнути MediaCaptionTooLongError
+        if text_clean and len(text_clean) > 1024:
+            logging.warning(f"✂️ Caption too long ({len(text_clean)} chars). Truncating...")
+            text_clean = text_clean[:1021] + "..."
+
         if msg.media:
             caption = text_clean if text_clean else None
             await client.send_file(TARGET_CHANNEL, msg.media, caption=caption)
@@ -153,7 +159,7 @@ async def forward_message(msg, chat_id):
         logging.exception(f"Error forwarding {chat_id}:{msg.id}: {e}")
 
 # -------------------------
-# Poller (interval via env)
+# Poller
 # -------------------------
 async def poll_channels():
     while True:
