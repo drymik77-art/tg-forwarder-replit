@@ -184,6 +184,9 @@ def is_active_now():
 # -------------------------
 # Message forwarding
 # -------------------------
+# -------------------------
+# Message forwarding
+# -------------------------
 async def forward_message(msg, chat_id):
     try:
         msg_id = msg.id
@@ -194,30 +197,58 @@ async def forward_message(msg, chat_id):
             logging.info("Outside active hours; skipping message %s:%s", chat_id, msg_id)
             return
 
-        text_clean, _ = strip_entities(msg)
+        # Якщо повідомлення є частиною альбому
+        if msg.grouped_id:
+            grouped_id = msg.grouped_id
+            # Отримуємо всі повідомлення з тієї ж групи
+            entity = await client.get_entity(chat_id)
+            grouped = []
+            async for m in client.iter_messages(entity, limit=10):
+                if m.grouped_id == grouped_id:
+                    grouped.append(m)
+            grouped = sorted(grouped, key=lambda x: x.id)  # порядок правильний
 
-        # 🔎 Перевірка на рекламу або платіж
+            # Використовуємо текст лише з першого повідомлення
+            main_msg = grouped[0]
+            text_clean, _ = strip_entities(main_msg)
+            if is_advertisement(text_clean):
+                logging.info(f"🚫 Skipped ad/payment album from {chat_id}:{msg.id}")
+                return
+
+            # Збираємо медіа-файли
+            media_files = [m.media for m in grouped if m.media]
+
+            if text_clean and len(text_clean) > 1024:
+                text_clean = text_clean[:1021] + "..."
+
+            await client.send_file(TARGET_CHANNEL, media_files, caption=text_clean or None)
+            for m in grouped:
+                mark_processed(chat_id, m.id)
+            logging.info(f"✅ Forwarded album {chat_id}:{grouped_id} ({len(media_files)} files)")
+            return
+
+        # 🔎 Якщо не альбом — стандартна логіка
+        text_clean, _ = strip_entities(msg)
         if is_advertisement(text_clean):
             logging.info(f"🚫 Skipped ad/payment message from {chat_id}:{msg.id}")
             return
 
-        # ✂️ Обрізаємо довгі підписи
         if text_clean and len(text_clean) > 1024:
-            logging.warning(f"✂️ Caption too long ({len(text_clean)} chars). Truncating...")
             text_clean = text_clean[:1021] + "..."
 
         if msg.media:
-            caption = text_clean if text_clean else None
-            await client.send_file(TARGET_CHANNEL, msg.media, caption=caption)
+            await client.send_file(TARGET_CHANNEL, msg.media, caption=text_clean or None)
         elif text_clean:
             await client.send_message(TARGET_CHANNEL, text_clean)
         else:
             return
 
-        logging.info(f"✅ Forwarded message {chat_id}:{msg_id}")
         mark_processed(chat_id, msg_id)
+        logging.info(f"✅ Forwarded message {chat_id}:{msg_id}")
+
     except Exception as e:
         logging.exception(f"Error forwarding {chat_id}:{msg.id}: {e}")
+
 
 # -------------------------
 # Poller
