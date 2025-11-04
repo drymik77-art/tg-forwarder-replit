@@ -92,23 +92,31 @@ URL_PATTERN = re.compile(r"(https?://\S+|t\.me/\S+|\S+\.telegram\.me/\S+)")
 MENTION_PATTERN = re.compile(r"@[\w_]+")
 
 def clean_text(text):
+    """Прибирає посилання, зайві пробіли та порожні рядки."""
     if not text:
         return text
     text = URL_PATTERN.sub("", text)
     text = MENTION_PATTERN.sub("", text)
-    text = re.sub(r'\n\s*\n+', '\n\n', text)
+    text = re.sub(r'\n\s*\n+', '\n', text)  # прибирає подвійні пусті рядки
     text = re.sub(r'[ \t]{2,}', ' ', text)
     return text.strip()
 
 def strip_entities(message):
+    """Видаляє лише посилання, але залишає текст слів, до яких вони були прикріплені."""
     text = message.message or ""
     if not text:
         return text, None
-    if not hasattr(message, 'entities') or not message.entities:
+
+    if not hasattr(message, "entities") or not message.entities:
         return clean_text(text), None
+
     chars = list(text)
     for ent in message.entities:
-        if isinstance(ent, (MessageEntityUrl, MessageEntityTextUrl, MessageEntityMention, MessageEntityMentionName)):
+        # Якщо це текст із вбудованим посиланням — залишаємо слово
+        if isinstance(ent, MessageEntityTextUrl):
+            continue
+        # Якщо це звичайне посилання або згадка — видаляємо
+        if isinstance(ent, (MessageEntityUrl, MessageEntityMention, MessageEntityMentionName)):
             for i in range(ent.offset, ent.offset + ent.length):
                 if 0 <= i < len(chars):
                     chars[i] = ''
@@ -206,7 +214,7 @@ async def poll_channels():
             for src in SOURCE_CHANNELS:
                 try:
                     entity = await client.get_entity(src)
-                    async for msg in client.iter_messages(entity, limit=5):
+                    async for msg in client.iter_messages(entity, limit=3):
                         if not is_processed(msg.chat_id, msg.id):
                             await forward_message(msg, msg.chat_id)
                 except Exception as e:
