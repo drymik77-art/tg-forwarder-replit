@@ -97,7 +97,7 @@ def clean_text(text):
         return text
     text = URL_PATTERN.sub("", text)
     text = MENTION_PATTERN.sub("", text)
-    text = re.sub(r'\n\s*\n+', '\n', text)  # прибирає подвійні пусті рядки
+    text = re.sub(r'\n\s*\n+', '\n', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
     return text.strip()
 
@@ -175,6 +175,12 @@ async def forward_message(msg, chat_id):
 
         if not is_active_now():
             logging.info("Outside active hours; skipping message %s:%s", chat_id, msg_id)
+            return
+
+        # 🚫 Ігноруємо повідомлення з кнопками (inline keyboard)
+        if hasattr(msg, "buttons") and msg.buttons:
+            logging.info(f"🚫 Skipped message {chat_id}:{msg.id} — contains inline buttons (possible ad)")
+            mark_processed(chat_id, msg.id)
             return
 
         # Альбоми
