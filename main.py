@@ -182,52 +182,58 @@ def is_active_now():
         return h >= start_hour or h < end_hour
 
 # -------------------------
-# Message forwarding
-# -------------------------
-# -------------------------
-# Message forwarding
+# Message forwarding (fixed for grouped albums)
 # -------------------------
 async def forward_message(msg, chat_id):
     try:
         msg_id = msg.id
+
+        # Якщо вже оброблено це повідомлення або групу
         if is_processed(chat_id, msg_id):
+            return
+        if msg.grouped_id and is_processed(chat_id, f"group_{msg.grouped_id}"):
             return
 
         if not is_active_now():
             logging.info("Outside active hours; skipping message %s:%s", chat_id, msg_id)
             return
 
-        # Якщо повідомлення є частиною альбому
+        # Якщо це альбом
         if msg.grouped_id:
             grouped_id = msg.grouped_id
-            # Отримуємо всі повідомлення з тієї ж групи
             entity = await client.get_entity(chat_id)
+
+            # Збираємо всі повідомлення групи
             grouped = []
             async for m in client.iter_messages(entity, limit=10):
                 if m.grouped_id == grouped_id:
                     grouped.append(m)
-            grouped = sorted(grouped, key=lambda x: x.id)  # порядок правильний
+            grouped = sorted(grouped, key=lambda x: x.id)
 
             # Використовуємо текст лише з першого повідомлення
             main_msg = grouped[0]
             text_clean, _ = strip_entities(main_msg)
             if is_advertisement(text_clean):
-                logging.info(f"🚫 Skipped ad/payment album from {chat_id}:{msg.id}")
+                logging.info(f"🚫 Skipped ad/payment album from {chat_id}:{grouped_id}")
                 return
 
-            # Збираємо медіа-файли
             media_files = [m.media for m in grouped if m.media]
-
             if text_clean and len(text_clean) > 1024:
                 text_clean = text_clean[:1021] + "..."
 
             await client.send_file(TARGET_CHANNEL, media_files, caption=text_clean or None)
+
+            # Позначаємо всю групу як оброблену
+            mark_processed(chat_id, f"group_{grouped_id}")
             for m in grouped:
                 mark_processed(chat_id, m.id)
+
             logging.info(f"✅ Forwarded album {chat_id}:{grouped_id} ({len(media_files)} files)")
             return
 
-        # 🔎 Якщо не альбом — стандартна логіка
+        # --------------------
+        # Окреме повідомлення
+        # --------------------
         text_clean, _ = strip_entities(msg)
         if is_advertisement(text_clean):
             logging.info(f"🚫 Skipped ad/payment message from {chat_id}:{msg.id}")
@@ -248,6 +254,7 @@ async def forward_message(msg, chat_id):
 
     except Exception as e:
         logging.exception(f"Error forwarding {chat_id}:{msg.id}: {e}")
+
 
 
 # -------------------------
