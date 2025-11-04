@@ -135,9 +135,10 @@ def is_active_now():
         return h >= start_hour or h < end_hour
 
 # -------------------------
-# Album buffer
+# Album buffer (оновлена логіка)
 # -------------------------
 album_buffer = defaultdict(list)
+album_timers = {}
 
 async def forward_album(messages, chat_id):
     try:
@@ -145,6 +146,8 @@ async def forward_album(messages, chat_id):
             logging.info("Outside active hours; skipping album %s", chat_id)
             return
 
+        # Сортуємо медіа за ID для збереження порядку
+        messages = sorted(messages, key=lambda m: m.id)
         media_files = []
         caption = None
 
@@ -159,8 +162,10 @@ async def forward_album(messages, chat_id):
 
         await client.send_file(TARGET_CHANNEL, media_files, caption=caption)
         logging.info(f"📸 Forwarded album ({len(media_files)} files) from {chat_id}")
+
         for m in messages:
             mark_processed(chat_id, m.id)
+
     except Exception as e:
         logging.exception(f"Error forwarding album from {chat_id}: {e}")
 
@@ -177,21 +182,31 @@ async def forward_message(msg, chat_id):
             logging.info("Outside active hours; skipping message %s:%s", chat_id, msg_id)
             return
 
-        # 🚫 Ігноруємо повідомлення з кнопками (inline keyboard)
+        # 🚫 Ігноруємо повідомлення з кнопками
         if hasattr(msg, "buttons") and msg.buttons:
             logging.info(f"🚫 Skipped message {chat_id}:{msg.id} — contains inline buttons (possible ad)")
             mark_processed(chat_id, msg.id)
             return
 
-        # Альбоми
+        # 🎞 Якщо це частина альбому
         if msg.grouped_id:
             album_buffer[msg.grouped_id].append(msg)
-            await asyncio.sleep(2)
-            if len(album_buffer[msg.grouped_id]) > 1:
-                group = album_buffer.pop(msg.grouped_id)
-                await forward_album(group, chat_id)
+
+            # Якщо є старий таймер — скасовуємо
+            if msg.grouped_id in album_timers:
+                album_timers[msg.grouped_id].cancel()
+
+            async def flush_album():
+                group = album_buffer.pop(msg.grouped_id, [])
+                if group:
+                    await forward_album(group, chat_id)
+
+            # чекаємо 3 секунди після останнього файлу альбому
+            loop = asyncio.get_event_loop()
+            album_timers[msg.grouped_id] = loop.call_later(3, lambda: asyncio.create_task(flush_album()))
             return
 
+        # 📝 Звичайне повідомлення
         text_clean, _ = strip_entities(msg)
 
         if text_clean and len(text_clean) > 1024:
@@ -208,6 +223,7 @@ async def forward_message(msg, chat_id):
 
         logging.info(f"✅ Forwarded message {chat_id}:{msg_id}")
         mark_processed(chat_id, msg_id)
+
     except Exception as e:
         logging.exception(f"Error forwarding {chat_id}:{msg.id}: {e}")
 
