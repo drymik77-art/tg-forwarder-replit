@@ -142,7 +142,7 @@ def strip_entities(message):
 
 CARD_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
 
-BLOCK_WORDS = ["збір коштів", "casino", "казино", "виграш", "реклама", "донат, "промо"]
+BLOCK_WORDS = ["збір коштів", "casino", "казино", "виграш", "реклама", "донат", "промо"]
 
 CASINO_URL_PATTERN = re.compile(
     r"(1xbet|bet|casino|ggbet|parimatch|slot|win)",
