@@ -142,7 +142,7 @@ def strip_entities(message):
 
 CARD_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
 
-BLOCK_WORDS = ["збір коштів", "casino", "казино", "виграш", "реклама", "донат", "промо"]
+BLOCK_WORDS = ["збір коштів", "casino", "казино", "виграш", "реклама", "розіграш", "розігруємо", "донат", "промо"]
 
 CASINO_URL_PATTERN = re.compile(
     r"(1xbet|bet|casino|ggbet|parimatch|slot|win)",
@@ -291,7 +291,7 @@ async def forward_message(msg, chat_id):
 
         reason = is_blocked_content(text_raw)
         if reason:
-            logging.info(f"🚫 Blocked {chat_id}:{msg.id} — {reason} — TEXT: {text_raw}")
+            logging.info(f"🚫 Blocked {chat_id}:{msg.id} — {reason}")
             mark_processed(chat_id, msg.id)
             return
 
@@ -307,7 +307,7 @@ async def forward_message(msg, chat_id):
 # ФІЛЬТР САМЕ ТУТ!!
         reason = is_blocked_content(text_clean)
         if reason:
-            logging.info(f"🚫 Blocked {chat_id}:{msg.id} — {reason} — TEXT: {text_clean}")
+            logging.info(f"🚫 Blocked {chat_id}:{msg.id} — {reason}")
             mark_processed(chat_id, msg.id)
             return
 
