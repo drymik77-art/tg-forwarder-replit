@@ -232,29 +232,52 @@ async def forward_album(messages, chat_id):
 
         messages = sorted(messages, key=lambda m: m.id)
         media_files = []
-        caption = None
+        
+        # -------------------------------
+        #   NEW CAPTION + FILTER LOGIC
+        # -------------------------------
+        # шукаємо перше повідомлення з текстом
+        caption_raw = None
+        first_msg = None
 
         for m in messages:
             if m.media:
                 media_files.append(m.media)
-            if not caption and m.message:
-                caption_raw = m.message or ""
 
-# фільтр до пересилання
-        reason = is_blocked_content(caption_raw)
-        if reason:
-            logging.info(f"🚫 Blocked album {chat_id}:{m.id} — {reason}")
-            for m2 in messages:
-                mark_processed(chat_id, m2.id)
-            return
+            if not caption_raw and m.message:
+                caption_raw = m.message
+                first_msg = m
 
-        # strip entities та emojis
-        caption_clean, _ = strip_entities(m)
-        caption_clean = remove_emojis(caption_clean)
-        caption = caption_clean
+        # якщо є текст — перевіряємо фільтри
+        caption = None
+        if caption_raw:
 
-        if caption and len(caption) > 1024:
-            caption = caption[:1021] + "..."
+            # 1) фільтр по сирому тексту
+            reason = is_blocked_content(caption_raw)
+            if reason:
+                logging.info(f"🚫 Blocked album {chat_id} — {reason}")
+                for m in messages:
+                    mark_processed(chat_id, m.id)
+                return
+
+            # 2) видаляємо entities + emojis
+            caption_clean, _ = strip_entities(first_msg)
+            caption_clean = remove_emojis(caption_clean)
+
+            # 3) фільтр після чистки
+            reason = is_blocked_content(caption_clean)
+            if reason:
+                logging.info(f"🚫 Blocked cleaned album {chat_id} — {reason}")
+                for m in messages:
+                    mark_processed(chat_id, m.id)
+                return
+
+            if len(caption_clean) > 1024:
+                caption_clean = caption_clean[:1021] + "..."
+
+            caption = caption_clean
+        else:
+            caption = None
 
         await client.send_file(TARGET_CHANNEL, media_files, caption=caption)
         logging.info(f"📸 Forwarded album ({len(media_files)} files) from {chat_id}")
