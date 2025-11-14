@@ -142,7 +142,7 @@ def strip_entities(message):
 
 CARD_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
 
-BLOCK_WORDS = ["збір", "казино", "виграш", "реклама", "промо"]
+BLOCK_WORDS = ["збір коштів", "casino", "казино", "виграш", "реклама", "донат, "промо"]
 
 CASINO_URL_PATTERN = re.compile(
     r"(1xbet|bet|casino|ggbet|parimatch|slot|win)",
@@ -154,26 +154,57 @@ DONATE_URL_PATTERN = re.compile(
     flags=re.IGNORECASE
 )
 
-def is_blocked_content(text: str) -> bool:
+# видалення емодзі
+EMOJI_PATTERN = re.compile(
+    "["                
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F680-\U0001F6FF"  # transport & map symbols
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FAFF"
+    "\u2600-\u26FF"          # misc symbols
+    "\u2700-\u27BF"          # dingbats
+    "]+",
+    flags=re.UNICODE
+)
+
+def remove_emojis(text: str) -> str:
     if not text:
-        return False
+        return text
+    return EMOJI_PATTERN.sub("", text).strip()
+
+
+def is_blocked_content(text: str):
+    """
+    Повертає рядок з причиною блокування або None, якщо все ок.
+    """
+    if not text:
+        return None
 
     lower = text.lower()
 
+    # 1️⃣ Банківська картка
     if CARD_PATTERN.search(text):
-        return True
+        return "знайдено схожий на номер банківської картки фрагмент"
 
+    # 2️⃣ Заборонені слова
     for w in BLOCK_WORDS:
         if w in lower:
-            return True
+            return f"знайдено заборонене слово '{w}'"
 
+    # 3️⃣ Казино / ставки
     if CASINO_URL_PATTERN.search(lower):
-        return True
+        return "знайдено згадку/посилання на казино або ставки"
 
+    # 4️⃣ Збір коштів
     if DONATE_URL_PATTERN.search(lower):
-        return True
+        return "знайдено посилання на збір коштів"
 
-    return False
+    return None
+
 
 
 # -------------------------
@@ -252,16 +283,23 @@ async def forward_message(msg, chat_id):
             )
             return
 
-        text_clean, _ = strip_entities(msg)
+                text_clean, _ = strip_entities(msg)
 
-        # CONTENT FILTER
-        if is_blocked_content(text_clean):
-            logging.info(f"🚫 Blocked message {chat_id}:{msg.id}")
+        # прибираємо емодзі
+        if text_clean:
+            text_clean = remove_emojis(text_clean)
+
+        # CONTENT FILTER з причиною
+        reason = is_blocked_content(text_clean)
+        if reason:
+            logging.info(f"🚫 Blocked message {chat_id}:{msg.id} — {reason}")
             mark_processed(chat_id, msg.id)
             return
 
+        # обрізання довгого тексту
         if text_clean and len(text_clean) > 1024:
             text_clean = text_clean[:1021] + "..."
+
 
         if msg.media:
             if isinstance(msg.media, MessageMediaWebPage):
