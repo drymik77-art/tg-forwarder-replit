@@ -88,21 +88,28 @@ def mark_processed(chat_id, message_id):
 # -------------------------
 # Text cleaning
 # -------------------------
-URL_PATTERN = re.compile(r"(https?://\S+|t\.me/\S+|\S+\.telegram\.me/\S+)")
+URL_PATTERN = re.compile(r"https?://\S+|t\.me/\S+|\S+\.telegram\.me/\S+")
 MENTION_PATTERN = re.compile(r"@[\w_]+")
 
 def clean_text(text):
     """Прибирає посилання, зайві пробіли та порожні рядки."""
     if not text:
         return text
+
+    # ВИДАЛЯЄМО ТІЛЬКИ САМІ URL
     text = URL_PATTERN.sub("", text)
+
+    # Видаляємо @mentions
     text = MENTION_PATTERN.sub("", text)
+
+    # Чистимо порожні рядки і зайві пробіли
     text = re.sub(r'\n\s*\n+', '\n', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
+
     return text.strip()
 
 def strip_entities(message):
-    """Видаляє лише посилання, але залишає текст слів, до яких вони були прикріплені."""
+    """Видаляє слова з телеграм-посиланнями; зовнішні посилання — тільки URL."""
     text = message.message or ""
     if not text:
         return text, None
@@ -111,17 +118,46 @@ def strip_entities(message):
         return clean_text(text), None
 
     chars = list(text)
+    remove_ranges = []
+
+    # Визначаємо, чи URL телеграмний
+    def is_telegram_url(url: str) -> bool:
+        return ("t.me/" in url) or ("telegram.me/" in url)
+
     for ent in message.entities:
-        # Якщо це текст із вбудованим посиланням — залишаємо слово
+
+        # 1️⃣ Вбудоване посилання (<a href>)
         if isinstance(ent, MessageEntityTextUrl):
-            continue
-        # Якщо це звичайне посилання або згадка — видаляємо
-        if isinstance(ent, (MessageEntityUrl, MessageEntityMention, MessageEntityMentionName)):
-            for i in range(ent.offset, ent.offset + ent.length):
-                if 0 <= i < len(chars):
-                    chars[i] = ''
+            if is_telegram_url(ent.url):
+                # Telegram → видаляємо слово повністю
+                remove_ranges.append((ent.offset, ent.offset + ent.length))
+            else:
+                continue  # зовнішній URL → зберігаємо слово
+
+        # 2️⃣ Голий URL
+        elif isinstance(ent, MessageEntityUrl):
+            url_text = text[ent.offset:ent.offset + ent.length]
+
+            if is_telegram_url(url_text):
+                # Telegram → видаляємо весь фрагмент
+                remove_ranges.append((ent.offset, ent.offset + ent.length))
+            else:
+                # Зовнішній URL → видаляємо тільки URL
+                remove_ranges.append((ent.offset, ent.offset + ent.length))
+
+        # 3️⃣ @mentions
+        elif isinstance(ent, (MessageEntityMention, MessageEntityMentionName)):
+            remove_ranges.append((ent.offset, ent.offset + ent.length))
+
+    # Видаляємо зазначені діапазони
+    for start, end in remove_ranges:
+        for i in range(start, end):
+            if 0 <= i < len(chars):
+                chars[i] = ''
+
     filtered = ''.join(chars)
     return clean_text(filtered), None
+
 
 # -------------------------
 # Active hours
