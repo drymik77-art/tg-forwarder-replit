@@ -94,25 +94,15 @@ URL_PATTERN = re.compile(r"https?://\S+|t\.me/\S+|\S+\.telegram\.me/\S+")
 MENTION_PATTERN = re.compile(r"@[\w_]+")
 
 def clean_text(text):
-    """Прибирає зайві пробіли, URL і порожні рядки."""
     if not text:
         return text
-
-    # Видаляємо тільки самі URL (слово залишається)
     text = URL_PATTERN.sub("", text)
-
-    # Видаляємо @mentions
     text = MENTION_PATTERN.sub("", text)
-
-    # Чистимо порожні рядки і пробіли
     text = re.sub(r'\n\s*\n+', '\n', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
-
     return text.strip()
 
-
 def strip_entities(message):
-    """Видаляє слова з телеграм-посиланнями; зовнішні URL — тільки URL."""
     text = message.message or ""
     if not text:
         return text, None
@@ -127,30 +117,63 @@ def strip_entities(message):
         return "t.me/" in url or "telegram.me/" in url
 
     for ent in message.entities:
-
-        # Вбудований <a href="...">текст</a>
         if isinstance(ent, MessageEntityTextUrl):
             if is_telegram_url(ent.url):
                 remove_ranges.append((ent.offset, ent.offset + ent.length))
             else:
                 continue
-
-        # Голий URL
         elif isinstance(ent, MessageEntityUrl):
-            url_text = text[ent.offset:ent.offset + ent.length]
             remove_ranges.append((ent.offset, ent.offset + ent.length))
-
-        # @mentions
         elif isinstance(ent, (MessageEntityMention, MessageEntityMentionName)):
             remove_ranges.append((ent.offset, ent.offset + ent.length))
 
     for start, end in remove_ranges:
         for i in range(start, end):
             if 0 <= i < len(chars):
-                chars[i] = ''
+                chars[i] = ""
 
-    filtered = ''.join(chars)
+    filtered = "".join(chars)
     return clean_text(filtered), None
+
+
+# -------------------------
+# Content filters (NEW)
+# -------------------------
+
+CARD_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
+
+BLOCK_WORDS = ["збір", "казино", "виграш", "реклама", "промо"]
+
+CASINO_URL_PATTERN = re.compile(
+    r"(1xbet|bet|casino|ggbet|parimatch|slot|win)",
+    flags=re.IGNORECASE
+)
+
+DONATE_URL_PATTERN = re.compile(
+    r"(mono\.me|send\.monobank\.ua|paypal\.me|buymeacoffee\.com)",
+    flags=re.IGNORECASE
+)
+
+def is_blocked_content(text: str) -> bool:
+    if not text:
+        return False
+
+    lower = text.lower()
+
+    if CARD_PATTERN.search(text):
+        return True
+
+    for w in BLOCK_WORDS:
+        if w in lower:
+            return True
+
+    if CASINO_URL_PATTERN.search(lower):
+        return True
+
+    if DONATE_URL_PATTERN.search(lower):
+        return True
+
+    return False
 
 
 # -------------------------
@@ -196,8 +219,7 @@ async def forward_album(messages, chat_id):
             mark_processed(chat_id, m.id)
 
     except Exception as e:
-        logging.exception(f"Error forwarding album from {chat_id}: {e}")
-
+        logging.exception(f"Error forwarding album: {e}")
 
 # -------------------------
 # Message forwarding
@@ -208,18 +230,14 @@ async def forward_message(msg, chat_id):
             return
 
         if not is_active_now():
-            logging.info("Outside active hours; skipping message %s:%s", chat_id, msg.id)
             return
 
         if hasattr(msg, "buttons") and msg.buttons:
-            logging.info(f"🚫 Skipped {chat_id}:{msg.id} — contains inline buttons")
             mark_processed(chat_id, msg.id)
             return
 
-        # Albums
         if msg.grouped_id:
             album_buffer[msg.grouped_id].append(msg)
-
             if msg.grouped_id in album_timers:
                 album_timers[msg.grouped_id].cancel()
 
@@ -229,44 +247,44 @@ async def forward_message(msg, chat_id):
                     await forward_album(group, chat_id)
 
             loop = asyncio.get_event_loop()
-            album_timers[msg.grouped_id] = loop.call_later(3, lambda: asyncio.create_task(flush_album()))
+            album_timers[msg.grouped_id] = loop.call_later(
+                3, lambda: asyncio.create_task(flush_album())
+            )
             return
 
-        # Clean text
         text_clean, _ = strip_entities(msg)
+
+        # CONTENT FILTER
+        if is_blocked_content(text_clean):
+            logging.info(f"🚫 Blocked message {chat_id}:{msg.id}")
+            mark_processed(chat_id, msg.id)
+            return
 
         if text_clean and len(text_clean) > 1024:
             text_clean = text_clean[:1021] + "..."
 
-        # MEDIA HANDLING
         if msg.media:
-
-            # WebPage → не файл → відправляємо тільки текст
             if isinstance(msg.media, MessageMediaWebPage):
                 if text_clean:
                     await client.send_message(TARGET_CHANNEL, text_clean)
 
-            # Фото / Документ → як файл
             elif isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
                 caption = text_clean if text_clean else None
                 await client.send_file(TARGET_CHANNEL, msg.media, caption=caption)
 
-            # Інші → fallback
             else:
                 if text_clean:
                     await client.send_message(TARGET_CHANNEL, text_clean)
 
         else:
-            # Just text
             if text_clean:
                 await client.send_message(TARGET_CHANNEL, text_clean)
 
-        logging.info(f"✅ Forwarded message {chat_id}:{msg.id}")
         mark_processed(chat_id, msg.id)
+        logging.info(f"✓ Forwarded {chat_id}:{msg.id}")
 
     except Exception as e:
         logging.exception(f"Error forwarding {chat_id}:{msg.id}: {e}")
-
 
 # -------------------------
 # Poller
@@ -281,15 +299,13 @@ async def poll_channels():
                         if not is_processed(msg.chat_id, msg.id):
                             await forward_message(msg, msg.chat_id)
                 except Exception as e:
-                    logging.warning(f"⚠️ Poller failed for {src}: {e}")
+                    logging.warning(f"Poller failed for {src}: {e}")
 
-            logging.info(f"⏱ Poll complete. Sleeping {POLL_INTERVAL}s...")
             await asyncio.sleep(POLL_INTERVAL)
 
         except Exception as e:
-            logging.error(f"Poller error: {e}")
+            logging.error(f"Poller fatal: {e}")
             await asyncio.sleep(60)
-
 
 # -------------------------
 # Event handler
@@ -298,7 +314,6 @@ async def poll_channels():
 async def handler(event):
     await forward_message(event.message, event.chat_id)
 
-
 # -------------------------
 # Start bot
 # -------------------------
@@ -306,20 +321,18 @@ def run_telethon():
     async def start_and_run():
         init_db()
         await client.start()
-        logging.info("✅ Connected to Telegram")
+        logging.info("Telegram connected")
 
         for src in SOURCE_CHANNELS:
             try:
                 await client.get_entity(src)
-                logging.info(f"Loaded entity for {src}")
-            except Exception as e:
-                logging.warning(f"⚠️ Could not load entity for {src}: {e}")
+            except:
+                pass
 
         asyncio.create_task(poll_channels())
         await client.run_until_disconnected()
 
     asyncio.run(start_and_run())
-
 
 # -------------------------
 # Flask
@@ -328,15 +341,12 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "OK - bot is alive", 200
-
+    return "OK - bot alive", 200
 
 def start_flask():
     app.run(host="0.0.0.0", port=PORT)
 
-
 if __name__ == "__main__":
-    logging.info(f"Starting bot: Telethon + Flask (port {PORT})")
     t = threading.Thread(target=run_telethon, daemon=True)
     t.start()
     start_flask()
