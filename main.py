@@ -283,7 +283,7 @@ async def forward_message(msg, chat_id):
             )
             return
 
-                text_clean, _ = strip_entities(msg)
+        text_clean, _ = strip_entities(msg)
 
         # прибираємо емодзі
         if text_clean:
