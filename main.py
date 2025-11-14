@@ -12,7 +12,8 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import (
     MessageEntityUrl, MessageEntityTextUrl,
-    MessageEntityMention, MessageEntityMentionName
+    MessageEntityMention, MessageEntityMentionName,
+    MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -88,28 +89,30 @@ def mark_processed(chat_id, message_id):
 # -------------------------
 # Text cleaning
 # -------------------------
+
 URL_PATTERN = re.compile(r"https?://\S+|t\.me/\S+|\S+\.telegram\.me/\S+")
 MENTION_PATTERN = re.compile(r"@[\w_]+")
 
 def clean_text(text):
-    """Прибирає посилання, зайві пробіли та порожні рядки."""
+    """Прибирає зайві пробіли, URL і порожні рядки."""
     if not text:
         return text
 
-    # ВИДАЛЯЄМО ТІЛЬКИ САМІ URL
+    # Видаляємо тільки самі URL (слово залишається)
     text = URL_PATTERN.sub("", text)
 
     # Видаляємо @mentions
     text = MENTION_PATTERN.sub("", text)
 
-    # Чистимо порожні рядки і зайві пробіли
+    # Чистимо порожні рядки і пробіли
     text = re.sub(r'\n\s*\n+', '\n', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
 
     return text.strip()
 
+
 def strip_entities(message):
-    """Видаляє слова з телеграм-посиланнями; зовнішні посилання — тільки URL."""
+    """Видаляє слова з телеграм-посиланнями; зовнішні URL — тільки URL."""
     text = message.message or ""
     if not text:
         return text, None
@@ -120,36 +123,27 @@ def strip_entities(message):
     chars = list(text)
     remove_ranges = []
 
-    # Визначаємо, чи URL телеграмний
     def is_telegram_url(url: str) -> bool:
-        return ("t.me/" in url) or ("telegram.me/" in url)
+        return "t.me/" in url or "telegram.me/" in url
 
     for ent in message.entities:
 
-        # 1️⃣ Вбудоване посилання (<a href>)
+        # Вбудований <a href="...">текст</a>
         if isinstance(ent, MessageEntityTextUrl):
             if is_telegram_url(ent.url):
-                # Telegram → видаляємо слово повністю
                 remove_ranges.append((ent.offset, ent.offset + ent.length))
             else:
-                continue  # зовнішній URL → зберігаємо слово
+                continue
 
-        # 2️⃣ Голий URL
+        # Голий URL
         elif isinstance(ent, MessageEntityUrl):
             url_text = text[ent.offset:ent.offset + ent.length]
+            remove_ranges.append((ent.offset, ent.offset + ent.length))
 
-            if is_telegram_url(url_text):
-                # Telegram → видаляємо весь фрагмент
-                remove_ranges.append((ent.offset, ent.offset + ent.length))
-            else:
-                # Зовнішній URL → видаляємо тільки URL
-                remove_ranges.append((ent.offset, ent.offset + ent.length))
-
-        # 3️⃣ @mentions
+        # @mentions
         elif isinstance(ent, (MessageEntityMention, MessageEntityMentionName)):
             remove_ranges.append((ent.offset, ent.offset + ent.length))
 
-    # Видаляємо зазначені діапазони
     for start, end in remove_ranges:
         for i in range(start, end):
             if 0 <= i < len(chars):
@@ -171,7 +165,7 @@ def is_active_now():
         return h >= start_hour or h < end_hour
 
 # -------------------------
-# Album buffer (оновлена логіка)
+# Album buffer
 # -------------------------
 album_buffer = defaultdict(list)
 album_timers = {}
@@ -182,7 +176,6 @@ async def forward_album(messages, chat_id):
             logging.info("Outside active hours; skipping album %s", chat_id)
             return
 
-        # Сортуємо медіа за ID для збереження порядку
         messages = sorted(messages, key=lambda m: m.id)
         media_files = []
         caption = None
@@ -205,30 +198,28 @@ async def forward_album(messages, chat_id):
     except Exception as e:
         logging.exception(f"Error forwarding album from {chat_id}: {e}")
 
+
 # -------------------------
 # Message forwarding
 # -------------------------
 async def forward_message(msg, chat_id):
     try:
-        msg_id = msg.id
-        if is_processed(chat_id, msg_id):
+        if is_processed(chat_id, msg.id):
             return
 
         if not is_active_now():
-            logging.info("Outside active hours; skipping message %s:%s", chat_id, msg_id)
+            logging.info("Outside active hours; skipping message %s:%s", chat_id, msg.id)
             return
 
-        # 🚫 Ігноруємо повідомлення з кнопками
         if hasattr(msg, "buttons") and msg.buttons:
-            logging.info(f"🚫 Skipped message {chat_id}:{msg.id} — contains inline buttons (possible ad)")
+            logging.info(f"🚫 Skipped {chat_id}:{msg.id} — contains inline buttons")
             mark_processed(chat_id, msg.id)
             return
 
-        # 🎞 Якщо це частина альбому
+        # Albums
         if msg.grouped_id:
             album_buffer[msg.grouped_id].append(msg)
 
-            # Якщо є старий таймер — скасовуємо
             if msg.grouped_id in album_timers:
                 album_timers[msg.grouped_id].cancel()
 
@@ -237,111 +228,17 @@ async def forward_message(msg, chat_id):
                 if group:
                     await forward_album(group, chat_id)
 
-            # чекаємо 3 секунди після останнього файлу альбому
             loop = asyncio.get_event_loop()
             album_timers[msg.grouped_id] = loop.call_later(3, lambda: asyncio.create_task(flush_album()))
             return
 
-        # 📝 Звичайне повідомлення
+        # Clean text
         text_clean, _ = strip_entities(msg)
 
         if text_clean and len(text_clean) > 1024:
-            logging.warning(f"✂️ Caption too long ({len(text_clean)} chars). Truncating...")
             text_clean = text_clean[:1021] + "..."
 
-        from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
+        # MEDIA HANDLING
+        if msg.media:
 
-# ...
-
-if msg.media:
-    # Якщо це веб-сторінка — НЕ намагаємось відправляти як файл
-    if isinstance(msg.media, MessageMediaWebPage):
-        # Відправляємо лише текст
-        if text_clean:
-            await client.send_message(TARGET_CHANNEL, text_clean)
-    # Якщо це фото або документ — відправляємо як файл
-    elif isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
-        caption = text_clean if text_clean else None
-        await client.send_file(TARGET_CHANNEL, msg.media, caption=caption)
-    else:
-        # На випадок інших типів — відправляємо текст
-        if text_clean:
-            await client.send_message(TARGET_CHANNEL, text_clean)
-
-elif text_clean:
-    await client.send_message(TARGET_CHANNEL, text_clean)
-
-        else:
-            return
-
-        logging.info(f"✅ Forwarded message {chat_id}:{msg_id}")
-        mark_processed(chat_id, msg_id)
-
-    except Exception as e:
-        logging.exception(f"Error forwarding {chat_id}:{msg.id}: {e}")
-
-# -------------------------
-# Poller
-# -------------------------
-async def poll_channels():
-    while True:
-        try:
-            for src in SOURCE_CHANNELS:
-                try:
-                    entity = await client.get_entity(src)
-                    async for msg in client.iter_messages(entity, limit=10):
-                        if not is_processed(msg.chat_id, msg.id):
-                            await forward_message(msg, msg.chat_id)
-                except Exception as e:
-                    logging.warning(f"⚠️ Poller failed for {src}: {e}")
-            logging.info(f"⏱ Poll cycle complete. Sleeping {POLL_INTERVAL} seconds...")
-            await asyncio.sleep(POLL_INTERVAL)
-        except Exception as e:
-            logging.error(f"Poller loop error: {e}")
-            await asyncio.sleep(60)
-
-# -------------------------
-# Event handler
-# -------------------------
-@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
-async def handler(event):
-    await forward_message(event.message, event.chat_id)
-
-# -------------------------
-# Start bot
-# -------------------------
-def run_telethon():
-    async def start_and_run():
-        init_db()
-        await client.start()
-        logging.info("✅ Connected to Telegram API")
-
-        for src in SOURCE_CHANNELS:
-            try:
-                await client.get_entity(src)
-                logging.info(f"✅ Loaded entity for {src}")
-            except Exception as e:
-                logging.warning(f"⚠️ Could not load entity for {src}: {e}")
-
-        asyncio.create_task(poll_channels())
-        await client.run_until_disconnected()
-
-    asyncio.run(start_and_run())
-
-# -------------------------
-# Flask
-# -------------------------
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "OK - bot is alive", 200
-
-def start_flask():
-    app.run(host="0.0.0.0", port=PORT)
-
-if __name__ == "__main__":
-    logging.info(f"Starting bot: launching Telethon in background thread and Flask server (port {PORT})")
-    t = threading.Thread(target=run_telethon, daemon=True)
-    t.start()
-    start_flask()
+            # WebPage → не файл →
