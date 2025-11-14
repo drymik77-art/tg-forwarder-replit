@@ -299,13 +299,15 @@ async def poll_channels():
                         if not is_processed(msg.chat_id, msg.id):
                             await forward_message(msg, msg.chat_id)
                 except Exception as e:
-                    logging.warning(f"Poller failed for {src}: {e}")
+                    logging.warning(f"⚠️ Poller failed for {src}: {e}")
 
+            logging.info(f"⏱ Poll cycle complete. Sleeping {POLL_INTERVAL} seconds...")
             await asyncio.sleep(POLL_INTERVAL)
 
         except Exception as e:
-            logging.error(f"Poller fatal: {e}")
+            logging.error(f"🔥 Poller loop error: {e}")
             await asyncio.sleep(60)
+
 
 # -------------------------
 # Event handler
@@ -321,18 +323,32 @@ def run_telethon():
     async def start_and_run():
         init_db()
         await client.start()
-        logging.info("Telegram connected")
+        logging.info("✅ Connected to Telegram")
+
+        # -------------------------
+        # LOAD SOURCE CHANNEL ENTITIES WITH LOGGING
+        # -------------------------
+        logging.info("🔌 Connecting to source channels...")
 
         for src in SOURCE_CHANNELS:
             try:
-                await client.get_entity(src)
-            except:
-                pass
+                entity = await client.get_entity(src)
+                title = getattr(entity, "title", None)
+                if title:
+                    logging.info(f"   ✅ Loaded entity for {src} ({title})")
+                else:
+                    logging.info(f"   ✅ Loaded entity for {src}")
+            except Exception as e:
+                logging.warning(f"   ⚠️ Could not load entity for {src}: {e}")
 
+        logging.info("🚀 Bot is fully initialized and listening for messages.")
+
+        # Start poller
         asyncio.create_task(poll_channels())
         await client.run_until_disconnected()
 
     asyncio.run(start_and_run())
+
 
 # -------------------------
 # Flask
