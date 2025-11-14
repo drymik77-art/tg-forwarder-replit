@@ -249,11 +249,28 @@ async def forward_message(msg, chat_id):
             logging.warning(f"✂️ Caption too long ({len(text_clean)} chars). Truncating...")
             text_clean = text_clean[:1021] + "..."
 
-        if msg.media:
-            caption = text_clean if text_clean else None
-            await client.send_file(TARGET_CHANNEL, msg.media, caption=caption)
-        elif text_clean:
+        from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
+
+# ...
+
+if msg.media:
+    # Якщо це веб-сторінка — НЕ намагаємось відправляти як файл
+    if isinstance(msg.media, MessageMediaWebPage):
+        # Відправляємо лише текст
+        if text_clean:
             await client.send_message(TARGET_CHANNEL, text_clean)
+    # Якщо це фото або документ — відправляємо як файл
+    elif isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
+        caption = text_clean if text_clean else None
+        await client.send_file(TARGET_CHANNEL, msg.media, caption=caption)
+    else:
+        # На випадок інших типів — відправляємо текст
+        if text_clean:
+            await client.send_message(TARGET_CHANNEL, text_clean)
+
+elif text_clean:
+    await client.send_message(TARGET_CHANNEL, text_clean)
+
         else:
             return
 
