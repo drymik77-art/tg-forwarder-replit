@@ -298,8 +298,18 @@ async def forward_message(msg, chat_id):
         # --------------------------
         # ЧИСТКА ТЕКСТУ ДЛЯ ВІДПРАВКИ
         # --------------------------
+        # спершу видалити entities
         text_clean, _ = strip_entities(msg)
+
+# прибрати емодзі
         text_clean = remove_emojis(text_clean)
+
+# ФІЛЬТР САМЕ ТУТ!!
+        reason = is_blocked_content(text_clean)
+        if reason:
+            logging.info(f"🚫 Blocked {chat_id}:{msg.id} — {reason} — TEXT: {text_clean}")
+            mark_processed(chat_id, msg.id)
+            return
 
         # обрізання довгого тексту
         if text_clean and len(text_clean) > 1024:
