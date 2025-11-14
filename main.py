@@ -241,4 +241,102 @@ async def forward_message(msg, chat_id):
         # MEDIA HANDLING
         if msg.media:
 
-            # WebPage → не файл →
+            # WebPage → не файл → відправляємо тільки текст
+            if isinstance(msg.media, MessageMediaWebPage):
+                if text_clean:
+                    await client.send_message(TARGET_CHANNEL, text_clean)
+
+            # Фото / Документ → як файл
+            elif isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
+                caption = text_clean if text_clean else None
+                await client.send_file(TARGET_CHANNEL, msg.media, caption=caption)
+
+            # Інші → fallback
+            else:
+                if text_clean:
+                    await client.send_message(TARGET_CHANNEL, text_clean)
+
+        else:
+            # Just text
+            if text_clean:
+                await client.send_message(TARGET_CHANNEL, text_clean)
+
+        logging.info(f"✅ Forwarded message {chat_id}:{msg.id}")
+        mark_processed(chat_id, msg.id)
+
+    except Exception as e:
+        logging.exception(f"Error forwarding {chat_id}:{msg.id}: {e}")
+
+
+# -------------------------
+# Poller
+# -------------------------
+async def poll_channels():
+    while True:
+        try:
+            for src in SOURCE_CHANNELS:
+                try:
+                    entity = await client.get_entity(src)
+                    async for msg in client.iter_messages(entity, limit=10):
+                        if not is_processed(msg.chat_id, msg.id):
+                            await forward_message(msg, msg.chat_id)
+                except Exception as e:
+                    logging.warning(f"⚠️ Poller failed for {src}: {e}")
+
+            logging.info(f"⏱ Poll complete. Sleeping {POLL_INTERVAL}s...")
+            await asyncio.sleep(POLL_INTERVAL)
+
+        except Exception as e:
+            logging.error(f"Poller error: {e}")
+            await asyncio.sleep(60)
+
+
+# -------------------------
+# Event handler
+# -------------------------
+@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
+async def handler(event):
+    await forward_message(event.message, event.chat_id)
+
+
+# -------------------------
+# Start bot
+# -------------------------
+def run_telethon():
+    async def start_and_run():
+        init_db()
+        await client.start()
+        logging.info("✅ Connected to Telegram")
+
+        for src in SOURCE_CHANNELS:
+            try:
+                await client.get_entity(src)
+                logging.info(f"Loaded entity for {src}")
+            except Exception as e:
+                logging.warning(f"⚠️ Could not load entity for {src}: {e}")
+
+        asyncio.create_task(poll_channels())
+        await client.run_until_disconnected()
+
+    asyncio.run(start_and_run())
+
+
+# -------------------------
+# Flask
+# -------------------------
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "OK - bot is alive", 200
+
+
+def start_flask():
+    app.run(host="0.0.0.0", port=PORT)
+
+
+if __name__ == "__main__":
+    logging.info(f"Starting bot: Telethon + Flask (port {PORT})")
+    t = threading.Thread(target=run_telethon, daemon=True)
+    t.start()
+    start_flask()
