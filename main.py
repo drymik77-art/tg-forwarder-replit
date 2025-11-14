@@ -7,25 +7,34 @@ import threading
 import asyncio
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
+
 from flask import Flask
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import (
-    MessageEntityUrl, MessageEntityTextUrl,
-    MessageEntityMention, MessageEntityMentionName,
-    MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
+    MessageEntityUrl,
+    MessageEntityTextUrl,
+    MessageEntityMention,
+    MessageEntityMentionName,
+    MessageMediaPhoto,
+    MessageMediaDocument,
+    MessageMediaWebPage,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
 # -------------------------
 # Environment variables
 # -------------------------
-def getenv_required(name):
+def getenv_required(name: str) -> str:
     v = os.environ.get(name)
     if not v:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return v
+
 
 SESSION_STRING = getenv_required("SESSION_STRING")
 API_ID = int(getenv_required("API_ID"))
@@ -61,48 +70,77 @@ client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS processed (
-        chat_id TEXT NOT NULL,
-        message_id INTEGER NOT NULL,
-        PRIMARY KEY (chat_id, message_id)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS processed (
+            chat_id TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            PRIMARY KEY (chat_id, message_id)
+        )
+        """
     )
-    """)
     conn.commit()
     conn.close()
 
-def is_processed(chat_id, message_id):
+
+def is_processed(chat_id, message_id) -> bool:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM processed WHERE chat_id=? AND message_id=?", (str(chat_id), int(message_id)))
+    cur.execute(
+        "SELECT 1 FROM processed WHERE chat_id=? AND message_id=?",
+        (str(chat_id), int(message_id)),
+    )
     res = cur.fetchone()
     conn.close()
     return res is not None
 
+
 def mark_processed(chat_id, message_id):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO processed (chat_id, message_id) VALUES (?, ?)", (str(chat_id), int(message_id)))
+    cur.execute(
+        "INSERT OR IGNORE INTO processed (chat_id, message_id) VALUES (?, ?)",
+        (str(chat_id), int(message_id)),
+    )
     conn.commit()
     conn.close()
 
-# -------------------------
-# Text cleaning
-# -------------------------
 
-URL_PATTERN = re.compile(r"https?://\S+|t\.me/\S+|\S+\.telegram\.me/\S+")
-MENTION_PATTERN = re.compile(r"@[\w_]+")
-
-def clean_text(text):
+# -------------------------
+# Text & entities cleaning
+# -------------------------
+def clean_text(text: str) -> str:
+    """Прибирає зайві пробіли, таби та порожні рядки."""
     if not text:
         return text
-    text = URL_PATTERN.sub("", text)
-    text = MENTION_PATTERN.sub("", text)
-    text = re.sub(r'\n\s*\n+', '\n', text)
-    text = re.sub(r'[ \t]{2,}', ' ', text)
+    # зменшуємо кількість порожніх рядків
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    # зменшуємо подвійні пробіли/таби
+    text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
 
+
+def expand_word(text: str, start: int, end: int) -> tuple[int, int]:
+    """Розширює діапазон до межі слова (по пробілах)."""
+    left = start
+    while left > 0 and not text[left - 1].isspace():
+        left -= 1
+
+    right = end
+    while right < len(text) and not text[right].isspace():
+        right += 1
+
+    return left, right
+
+
 def strip_entities(message):
+    """
+    Видаляє:
+      - цілі слова, що містять t.me / telegram.me
+      - @згадки (MessageEntityMention / MessageEntityMentionName)
+      - будь-які URL (MessageEntityUrl, MessageEntityTextUrl), але НЕ ріже інші слова.
+    Все інше — залишає.
+    """
     text = message.message or ""
     if not text:
         return text, None
@@ -110,130 +148,120 @@ def strip_entities(message):
     chars = list(text)
     n = len(chars)
 
-    # UTF-16 для правильних індексів
-    utf16 = text.encode('utf-16-le')
+    # UTF-16 для коректної роботи з індексами Telegram
+    utf16 = text.encode("utf-16-le")
 
-    def utf16_to_py(i):
-        return len(utf16[: i * 2].decode('utf-16-le', errors='ignore'))
+    def utf16_to_py(i: int) -> int:
+        return len(utf16[: i * 2].decode("utf-16-le", errors="ignore"))
 
-    # Перше: збираємо області для видалення
-    to_remove = []
+    to_remove: list[tuple[int, int]] = []
 
     for ent in getattr(message, "entities", []) or []:
-
-        start_tg = ent.offset
-        end_tg = ent.offset + ent.length
-
-        start = utf16_to_py(start_tg)
-        end = utf16_to_py(end_tg)
+        start = utf16_to_py(ent.offset)
+        end = utf16_to_py(ent.offset + ent.length)
 
         start = max(0, min(start, n))
         end = max(0, min(end, n))
 
         entity_text = text[start:end]
 
-        # --- 1) t.me — видаляємо все слово ---
+        # 1) t.me / telegram.me → видаляємо ціле слово
         if "t.me" in entity_text or "telegram.me" in entity_text:
-            # шукаємо межі слова
-            left = start
-            while left > 0 and not text[left - 1].isspace():
-                left -= 1
-
-            right = end
-            while right < n and not text[right].isspace():
-                right += 1
-
-            to_remove.append((left, right))
+            s, e = expand_word(text, start, end)
+            to_remove.append((s, e))
             continue
 
-        # --- 2) @mentions — видалити цілком слово ---
-        from telethon.tl.types import MessageEntityMention, MessageEntityMentionName
+        # 2) @mentions → видаляємо ціле слово
         if isinstance(ent, (MessageEntityMention, MessageEntityMentionName)):
-            left = start
-            while left > 0 and not text[left - 1].isspace():
-                left -= 1
-
-            right = end
-            while right < n and not text[right].isspace():
-                right += 1
-
-            to_remove.append((left, right))
+            s, e = expand_word(text, start, end)
+            to_remove.append((s, e))
             continue
 
-        # --- 3) Інші URL — видалити тільки сам URL ---
-        from telethon.tl.types import MessageEntityUrl
+        # 3) Звичайний URL → видаляємо лише URL
         if isinstance(ent, MessageEntityUrl):
             to_remove.append((start, end))
             continue
 
-        # --- 4) Вбудовані URL (MessageEntityTextUrl) ---
-        from telethon.tl.types import MessageEntityTextUrl
+        # 4) Вбудований URL (MessageEntityTextUrl)
         if isinstance(ent, MessageEntityTextUrl):
-            # Якщо це t.me → видалити слово
+            # Якщо це t.me – видаляємо слово
             if "t.me" in ent.url or "telegram.me" in ent.url:
-                left = start
-                while left > 0 and not text[left - 1].isspace():
-                    left -= 1
-
-                right = end
-                while right < n and not text[right].isspace():
-                    right += 1
-
-                to_remove.append((left, right))
+                s, e = expand_word(text, start, end)
+                to_remove.append((s, e))
             else:
-                # Якщо звичайний URL → прибрати URL, але лишити слово
+                # Звичайний URL → прибираємо URL, а не слово
                 to_remove.append((start, end))
 
-    # Застосовуємо очищення
-    mask = chars[:]
+    # Застосовуємо вирізання
     for s, e in to_remove:
         for i in range(s, e):
-            mask[i] = ""
+            chars[i] = ""
 
-    cleaned = "".join(mask).strip()
+    cleaned = "".join(chars)
     cleaned = clean_text(cleaned)
 
     return cleaned, None
 
+
 # -------------------------
-# Content filters (NEW)
+# Emoji removal
 # -------------------------
-
-CARD_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
-
-BLOCK_WORDS = ["збір коштів", "проводимо збір", "casino", "казино", "виграш", "реклама", "розіграш", "розігруємо", "донат", "промо"]
-
-CASINO_URL_PATTERN = re.compile(
-    r"(1xbet|bet|casino|ggbet|parimatch|slot|win)",
-    flags=re.IGNORECASE
-)
-
-DONATE_URL_PATTERN = re.compile(
-    r"(mono\.me|send\.monobank\.ua|paypal\.me|buymeacoffee\.com)",
-    flags=re.IGNORECASE
-)
-
-# видалення емодзі
 EMOJI_PATTERN = re.compile(
-    "["                
-    "\U0001F300-\U0001F5FF"  # symbols & pictographs
-    "\U0001F600-\U0001F64F"  # emoticons
-    "\U0001F680-\U0001F6FF"  # transport & map symbols
+    "["
+    "\U0001F300-\U0001F5FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
     "\U0001F700-\U0001F77F"
     "\U0001F780-\U0001F7FF"
     "\U0001F800-\U0001F8FF"
     "\U0001F900-\U0001F9FF"
     "\U0001FA00-\U0001FAFF"
-    "\u2600-\u26FF"          # misc symbols
-    "\u2700-\u27BF"          # dingbats
+    "\u2600-\u26FF"
+    "\u2700-\u27BF"
     "]+",
-    flags=re.UNICODE
+    flags=re.UNICODE,
 )
+
 
 def remove_emojis(text: str) -> str:
     if not text:
         return text
     return EMOJI_PATTERN.sub("", text).strip()
+
+
+def clean_message_text(msg) -> str:
+    """Єдина точка очищення тексту: entities → емодзі → пробіли."""
+    text, _ = strip_entities(msg)
+    text = remove_emojis(text)
+    return text
+
+
+# -------------------------
+# Content filters
+# -------------------------
+CARD_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
+
+BLOCK_WORDS = [
+    "збір коштів",
+    "проводимо збір",
+    "casino",
+    "казино",
+    "виграш",
+    "реклама",
+    "розіграш",
+    "розігруємо",
+    "донат",
+    "промо",
+]
+
+CASINO_URL_PATTERN = re.compile(
+    r"(1xbet|bet|casino|ggbet|parimatch|slot|win)", flags=re.IGNORECASE
+)
+
+DONATE_URL_PATTERN = re.compile(
+    r"(mono\.me|send\.monobank\.ua|paypal\.me|buymeacoffee\.com)",
+    flags=re.IGNORECASE,
+)
 
 
 def is_blocked_content(text: str):
@@ -245,43 +273,45 @@ def is_blocked_content(text: str):
 
     lower = text.lower()
 
-    # 1️⃣ Банківська картка
+    # 1) Банківська картка
     if CARD_PATTERN.search(text):
         return "знайдено схожий на номер банківської картки фрагмент"
 
-    # 2️⃣ Заборонені слова
+    # 2) Заборонені слова
     for w in BLOCK_WORDS:
         if w in lower:
             return f"знайдено заборонене слово '{w}'"
 
-    # 3️⃣ Казино / ставки
+    # 3) Казино / ставки
     if CASINO_URL_PATTERN.search(lower):
         return "знайдено згадку/посилання на казино або ставки"
 
-    # 4️⃣ Збір коштів
+    # 4) Збір коштів
     if DONATE_URL_PATTERN.search(lower):
         return "знайдено посилання на збір коштів"
 
     return None
 
 
-
 # -------------------------
 # Active hours
 # -------------------------
-def is_active_now():
+def is_active_now() -> bool:
     now = datetime.now(timezone.utc) + timedelta(hours=TZ_OFFSET_HOURS)
     h = now.hour
     if start_hour <= end_hour:
         return start_hour <= h < end_hour
     else:
+        # перехід через північ
         return h >= start_hour or h < end_hour
+
 
 # -------------------------
 # Album buffer
 # -------------------------
-album_buffer = defaultdict(list)
-album_timers = {}
+album_buffer: dict = defaultdict(list)
+album_timers: dict = {}
+
 
 async def forward_album(messages, chat_id):
     try:
@@ -291,27 +321,20 @@ async def forward_album(messages, chat_id):
 
         messages = sorted(messages, key=lambda m: m.id)
         media_files = []
-        
-        # -------------------------------
-        #   NEW CAPTION + FILTER LOGIC
-        # -------------------------------
-        # шукаємо перше повідомлення з текстом
+
         caption_raw = None
         first_msg = None
 
         for m in messages:
             if m.media:
                 media_files.append(m.media)
-
             if not caption_raw and m.message:
                 caption_raw = m.message
                 first_msg = m
 
-        # якщо є текст — перевіряємо фільтри
         caption = None
         if caption_raw:
-
-            # 1) фільтр по сирому тексту
+            # 1) Фільтр по сирому тексту
             reason = is_blocked_content(caption_raw)
             if reason:
                 logging.info(f"🚫 Blocked album {chat_id} — {reason}")
@@ -319,11 +342,10 @@ async def forward_album(messages, chat_id):
                     mark_processed(chat_id, m.id)
                 return
 
-            # 2) видаляємо entities + emojis
-            caption_clean, _ = strip_entities(first_msg)
-            caption_clean = remove_emojis(caption_clean)
+            # 2) Очистка (entities + емодзі)
+            caption_clean = clean_message_text(first_msg)
 
-            # 3) фільтр після чистки
+            # 3) Фільтр після чистки
             reason = is_blocked_content(caption_clean)
             if reason:
                 logging.info(f"🚫 Blocked cleaned album {chat_id} — {reason}")
@@ -335,8 +357,6 @@ async def forward_album(messages, chat_id):
                 caption_clean = caption_clean[:1021] + "..."
 
             caption = caption_clean
-        else:
-            caption = None
 
         await client.send_file(TARGET_CHANNEL, media_files, caption=caption)
         logging.info(f"📸 Forwarded album ({len(media_files)} files) from {chat_id}")
@@ -346,6 +366,7 @@ async def forward_album(messages, chat_id):
 
     except Exception as e:
         logging.exception(f"Error forwarding album: {e}")
+
 
 # -------------------------
 # Message forwarding
@@ -363,6 +384,7 @@ async def forward_message(msg, chat_id):
             mark_processed(chat_id, msg.id)
             return
 
+        # Альбоми
         if msg.grouped_id:
             album_buffer[msg.grouped_id].append(msg)
             if msg.grouped_id in album_timers:
@@ -379,38 +401,29 @@ async def forward_message(msg, chat_id):
             )
             return
 
-        # --------------------------  
-        # ★ НОВИЙ БЛОК — ФІЛЬТРАЦІЯ
-        # --------------------------
-
+        # 1) Фільтр по сирому тексту
         text_raw = msg.message or ""
-
         reason = is_blocked_content(text_raw)
         if reason:
             logging.info(f"🚫 Blocked {chat_id}:{msg.id} — {reason}")
             mark_processed(chat_id, msg.id)
             return
 
-        # --------------------------
-        # ЧИСТКА ТЕКСТУ ДЛЯ ВІДПРАВКИ
-        # --------------------------
-        # спершу видалити entities
-        text_clean, _ = strip_entities(msg)
+        # 2) Очищення тексту (entities + емодзі)
+        text_clean = clean_message_text(msg)
 
-# прибрати емодзі
-        text_clean = remove_emojis(text_clean)
-
-# ФІЛЬТР САМЕ ТУТ!!
+        # 3) Фільтр по очищеному тексту
         reason = is_blocked_content(text_clean)
         if reason:
             logging.info(f"🚫 Blocked {chat_id}:{msg.id} — {reason}")
             mark_processed(chat_id, msg.id)
             return
 
-        # обрізання довгого тексту
+        # 4) Обрізання довгого тексту
         if text_clean and len(text_clean) > 1024:
             text_clean = text_clean[:1021] + "..."
 
+        # 5) Відправка
         if msg.media:
             if isinstance(msg.media, MessageMediaWebPage):
                 if text_clean:
@@ -423,7 +436,6 @@ async def forward_message(msg, chat_id):
             else:
                 if text_clean:
                     await client.send_message(TARGET_CHANNEL, text_clean)
-
         else:
             if text_clean:
                 await client.send_message(TARGET_CHANNEL, text_clean)
@@ -433,6 +445,7 @@ async def forward_message(msg, chat_id):
 
     except Exception as e:
         logging.exception(f"Error forwarding {chat_id}:{msg.id}: {e}")
+
 
 # -------------------------
 # Poller
@@ -464,6 +477,7 @@ async def poll_channels():
 async def handler(event):
     await forward_message(event.message, event.chat_id)
 
+
 # -------------------------
 # Start bot
 # -------------------------
@@ -473,11 +487,7 @@ def run_telethon():
         await client.start()
         logging.info("✅ Connected to Telegram")
 
-        # -------------------------
-        # LOAD SOURCE CHANNEL ENTITIES WITH LOGGING
-        # -------------------------
         logging.info("🔌 Connecting to source channels...")
-
         for src in SOURCE_CHANNELS:
             try:
                 entity = await client.get_entity(src)
@@ -491,7 +501,6 @@ def run_telethon():
 
         logging.info("🚀 Bot is fully initialized and listening for messages.")
 
-        # Start poller
         asyncio.create_task(poll_channels())
         await client.run_until_disconnected()
 
@@ -503,12 +512,15 @@ def run_telethon():
 # -------------------------
 app = Flask(__name__)
 
+
 @app.route("/")
 def home():
     return "OK - bot alive", 200
 
+
 def start_flask():
     app.run(host="0.0.0.0", port=PORT)
+
 
 if __name__ == "__main__":
     t = threading.Thread(target=run_telethon, daemon=True)
