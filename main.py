@@ -107,36 +107,93 @@ def strip_entities(message):
     if not text:
         return text, None
 
-    if not hasattr(message, "entities") or not message.entities:
-        return clean_text(text), None
+    chars = list(text)
+    n = len(chars)
 
-    # UTF-16 представлення рядка
+    # UTF-16 для правильних індексів
     utf16 = text.encode('utf-16-le')
 
     def utf16_to_py(i):
-        """Телеграм індекси → Python індекси"""
         return len(utf16[: i * 2].decode('utf-16-le', errors='ignore'))
 
-    chars = list(text)
+    # Перше: збираємо області для видалення
+    to_remove = []
 
-    for ent in message.entities:
+    for ent in getattr(message, "entities", []) or []:
 
         start_tg = ent.offset
         end_tg = ent.offset + ent.length
 
-        # перетворення
         start = utf16_to_py(start_tg)
         end = utf16_to_py(end_tg)
 
-        # межі безпеки
-        start = max(0, min(start, len(chars)))
-        end = max(0, min(end, len(chars)))
+        start = max(0, min(start, n))
+        end = max(0, min(end, n))
 
-        for i in range(start, end):
-            chars[i] = ""
+        entity_text = text[start:end]
 
-    filtered = "".join(chars)
-    return clean_text(filtered), None
+        # --- 1) t.me — видаляємо все слово ---
+        if "t.me" in entity_text or "telegram.me" in entity_text:
+            # шукаємо межі слова
+            left = start
+            while left > 0 and not text[left - 1].isspace():
+                left -= 1
+
+            right = end
+            while right < n and not text[right].isspace():
+                right += 1
+
+            to_remove.append((left, right))
+            continue
+
+        # --- 2) @mentions — видалити цілком слово ---
+        from telethon.tl.types import MessageEntityMention, MessageEntityMentionName
+        if isinstance(ent, (MessageEntityMention, MessageEntityMentionName)):
+            left = start
+            while left > 0 and not text[left - 1].isspace():
+                left -= 1
+
+            right = end
+            while right < n and not text[right].isspace():
+                right += 1
+
+            to_remove.append((left, right))
+            continue
+
+        # --- 3) Інші URL — видалити тільки сам URL ---
+        from telethon.tl.types import MessageEntityUrl
+        if isinstance(ent, MessageEntityUrl):
+            to_remove.append((start, end))
+            continue
+
+        # --- 4) Вбудовані URL (MessageEntityTextUrl) ---
+        from telethon.tl.types import MessageEntityTextUrl
+        if isinstance(ent, MessageEntityTextUrl):
+            # Якщо це t.me → видалити слово
+            if "t.me" in ent.url or "telegram.me" in ent.url:
+                left = start
+                while left > 0 and not text[left - 1].isspace():
+                    left -= 1
+
+                right = end
+                while right < n and not text[right].isspace():
+                    right += 1
+
+                to_remove.append((left, right))
+            else:
+                # Якщо звичайний URL → прибрати URL, але лишити слово
+                to_remove.append((start, end))
+
+    # Застосовуємо очищення
+    mask = chars[:]
+    for s, e in to_remove:
+        for i in range(s, e):
+            mask[i] = ""
+
+    cleaned = "".join(mask).strip()
+    cleaned = clean_text(cleaned)
+
+    return cleaned, None
 
 # -------------------------
 # Content filters (NEW)
