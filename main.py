@@ -110,53 +110,30 @@ def strip_entities(message):
     if not hasattr(message, "entities") or not message.entities:
         return clean_text(text), None
 
+    # UTF-16 представлення рядка
+    utf16 = text.encode('utf-16-le')
+
+    def utf16_to_py(i):
+        """Телеграм індекси → Python індекси"""
+        return len(utf16[: i * 2].decode('utf-16-le', errors='ignore'))
+
     chars = list(text)
-    n = len(chars)
-
-    def is_telegram_url(url: str) -> bool:
-        return "t.me/" in url or "telegram.me/" in url
-
-    def is_word_boundary(ch: str) -> bool:
-        # роздільники слів: пробіли, переноси, розділові знаки, вертикальна риска тощо
-        return ch.isspace() or ch in ",.!?;:()[]{}«»\"'|"
 
     for ent in message.entities:
-        # 1) Текст із вбудованим посиланням
-        if isinstance(ent, MessageEntityTextUrl):
-            if not is_telegram_url(ent.url):
-                # зовнішній URL → залишаємо слово, нічого не вирізаємо
-                continue
 
-            # для Telegram-лінків — видаляємо ВСЕ слово цілком
-            start = ent.offset
-            end = ent.offset + ent.length
+        start_tg = ent.offset
+        end_tg = ent.offset + ent.length
 
-            # розширюємо вліво до межі слова
-            while start > 0 and not is_word_boundary(chars[start - 1]):
-                start -= 1
+        # перетворення
+        start = utf16_to_py(start_tg)
+        end = utf16_to_py(end_tg)
 
-            # розширюємо вправо до межі слова
-            while end < n and not is_word_boundary(chars[end]):
-                end += 1
+        # межі безпеки
+        start = max(0, min(start, len(chars)))
+        end = max(0, min(end, len(chars)))
 
-            for i in range(start, end):
-                chars[i] = ""
-
-        # 2) Звичайний URL (просто посилання)
-        elif isinstance(ent, MessageEntityUrl):
-            start = ent.offset
-            end = ent.offset + ent.length
-            for i in range(start, end):
-                if 0 <= i < n:
-                    chars[i] = ""
-
-        # 3) @username та згадки за ID
-        elif isinstance(ent, (MessageEntityMention, MessageEntityMentionName)):
-            start = ent.offset
-            end = ent.offset + ent.length
-            for i in range(start, end):
-                if 0 <= i < n:
-                    chars[i] = ""
+        for i in range(start, end):
+            chars[i] = ""
 
     filtered = "".join(chars)
     return clean_text(filtered), None
