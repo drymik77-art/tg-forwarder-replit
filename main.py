@@ -142,7 +142,7 @@ def strip_entities(message):
 
 CARD_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
 
-BLOCK_WORDS = ["збір коштів", "casino", "казино", "виграш", "реклама", "розіграш", "розігруємо", "донат", "промо"]
+BLOCK_WORDS = ["збір коштів", "проводимо збір", "casino", "казино", "виграш", "реклама", "розіграш", "розігруємо", "донат", "промо"]
 
 CASINO_URL_PATTERN = re.compile(
     r"(1xbet|bet|casino|ggbet|parimatch|slot|win)",
@@ -300,6 +300,7 @@ async def forward_message(msg, chat_id):
             return
 
         if hasattr(msg, "buttons") and msg.buttons:
+            logging.info(f"🚫 Blocked {chat_id}:{msg.id} — повідомлення містить кнопки")
             mark_processed(chat_id, msg.id)
             return
 
