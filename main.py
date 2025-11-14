@@ -238,7 +238,20 @@ async def forward_album(messages, chat_id):
             if m.media:
                 media_files.append(m.media)
             if not caption and m.message:
-                caption = clean_text(m.message)
+                caption_raw = m.message or ""
+
+# фільтр до пересилання
+        reason = is_blocked_content(caption_raw)
+        if reason:
+            logging.info(f"🚫 Blocked album {chat_id}:{m.id} — {reason}")
+            for m2 in messages:
+                mark_processed(chat_id, m2.id)
+            return
+
+        # strip entities та emojis
+        caption_clean, _ = strip_entities(m)
+        caption_clean = remove_emojis(caption_clean)
+        caption = caption_clean
 
         if caption and len(caption) > 1024:
             caption = caption[:1021] + "..."
