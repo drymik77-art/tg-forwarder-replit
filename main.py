@@ -283,27 +283,27 @@ async def forward_message(msg, chat_id):
             )
             return
 
-        # сирий текст для фільтрації
-text_raw = msg.message or ""
+        # --------------------------  
+        # ★ НОВИЙ БЛОК — ФІЛЬТРАЦІЯ
+        # --------------------------
 
-# перевірка фільтрів до очищення
-reason = is_blocked_content(text_raw)
-if reason:
-    logging.info(f"🚫 Blocked {chat_id}:{msg.id} — {reason} — TEXT: {text_raw}")
-    mark_processed(chat_id, msg.id)
-    return
+        text_raw = msg.message or ""
 
-# очищення тексту тільки після фільтрації
-text_clean, _ = strip_entities(msg)
+        reason = is_blocked_content(text_raw)
+        if reason:
+            logging.info(f"🚫 Blocked {chat_id}:{msg.id} — {reason} — TEXT: {text_raw}")
+            mark_processed(chat_id, msg.id)
+            return
 
-# прибираємо емодзі
-text_clean = remove_emojis(text_clean)
-
+        # --------------------------
+        # ЧИСТКА ТЕКСТУ ДЛЯ ВІДПРАВКИ
+        # --------------------------
+        text_clean, _ = strip_entities(msg)
+        text_clean = remove_emojis(text_clean)
 
         # обрізання довгого тексту
         if text_clean and len(text_clean) > 1024:
             text_clean = text_clean[:1021] + "..."
-
 
         if msg.media:
             if isinstance(msg.media, MessageMediaWebPage):
