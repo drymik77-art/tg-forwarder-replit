@@ -190,7 +190,7 @@ def strip_entities(message):
                 to_remove.append((s, e))
             else:
                 # Звичайний URL → прибираємо URL, а не слово
-                to_remove.append((start, end))
+                continue
 
     # Застосовуємо вирізання
     for s, e in to_remove:
