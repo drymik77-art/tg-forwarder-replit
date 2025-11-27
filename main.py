@@ -421,12 +421,14 @@ async def forward_message(msg, chat_id):
             elif isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
                 caption = text_clean if text_clean else None
                 await client.send_file(target, msg.media, caption=caption)
+                logging.info(f"📸 Sent MEDIA → {target}")
             else:
                 if text_clean:
                     await client.send_message(target, text_clean)
         else:
             if text_clean:
                 await client.send_message(target, text_clean)
+                logging.info(f"📨 Sent TEXT → {target}")
 
         mark_processed(chat_id, msg.id)
 
@@ -451,7 +453,7 @@ async def poll_channels():
             for src in active_sources:
                 try:
                     entity = await client.get_entity(src)
-                    async for msg in client.iter_messages(entity, limit=10):
+                    async for msg in client.iter_messages(entity, limit=5):
                         if not is_processed(msg.chat_id, msg.id):
                             await forward_message(msg, msg.chat_id)
                 except Exception as e:
