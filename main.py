@@ -491,12 +491,49 @@ def run_telethon():
         init_db()
         await client.start()
 
-        logging.info("Telegram connected.")
+        logging.info("✅ Telegram connected.")
 
+        # -------------------------
+        # Load channels info at startup
+        # -------------------------
+        logging.info("🔌 Loading channels for both modes...")
+
+        # --- NIGHT MODE CHANNELS ---
+        logging.info("🌙 Night mode channels:")
+        for src in NIGHT_SOURCE_CHANNELS:
+            try:
+                entity = await client.get_entity(src)
+                title = getattr(entity, "title", None)
+                logging.info(f"   ✓ NIGHT source {src} ({title})")
+            except Exception as e:
+                logging.warning(f"   ⚠️ Could not load NIGHT entity {src}: {e}")
+
+        logging.info(f"   🎯 NIGHT target channel: {NIGHT_TARGET_CHANNEL}")
+
+        # --- DAY MODE CHANNELS ---
+        logging.info("☀️ Day mode channels:")
+        for src in DAY_SOURCE_CHANNELS:
+            try:
+                entity = await client.get_entity(src)
+                title = getattr(entity, "title", None)
+                logging.info(f"   ✓ DAY source {src} ({title})")
+            except Exception as e:
+                logging.warning(f"   ⚠️ Could not load DAY entity {src}: {e}")
+
+        logging.info(f"   🎯 DAY target channel: {DAY_TARGET_CHANNEL}")
+
+        # Poller interval log
+        logging.info(f"⏱ Poller interval set to {POLL_INTERVAL} seconds")
+
+        logging.info("🚀 Bot is fully initialized and listening for messages.")
+
+        # Start poller
         asyncio.create_task(poll_channels())
+
         await client.run_until_disconnected()
 
     asyncio.run(start_and_run())
+
 
 # -------------------------
 # Flask
