@@ -453,7 +453,7 @@ async def poll_channels():
             for src in active_sources:
                 try:
                     entity = await client.get_entity(src)
-                    async for msg in client.iter_messages(entity, limit=5):
+                    async for msg in client.iter_messages(entity, limit=1):
                         if not is_processed(msg.chat_id, msg.id):
                             await forward_message(msg, msg.chat_id)
                 except Exception as e:
