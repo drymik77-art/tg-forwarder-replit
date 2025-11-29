@@ -319,6 +319,7 @@ async def forward_album(messages, chat_id):
         else:
             return
 
+        # сортуємо повідомлення в альбомі по id
         messages = sorted(messages, key=lambda m: m.id)
         media_files = []
 
@@ -328,9 +329,10 @@ async def forward_album(messages, chat_id):
         for m in messages:
             if m.media:
                 media_files.append(m.media)
-            if not caption_raw and m.message:
+            if m.message:
                 caption_raw = m.message
                 first_msg = m
+
 
         caption = None
         if caption_raw:
@@ -353,10 +355,13 @@ async def forward_album(messages, chat_id):
 
             caption = caption_clean
 
+        # caption у send_file для списку файлів Telegram ставить на ПЕРШИЙ файл
         await client.send_file(target, media_files, caption=caption)
 
         for m in messages:
             mark_processed(chat_id, m.id)
+
+        logging.info(f"📚 Sent MEDIA GROUP ({len(media_files)} items) → {target}")
 
     except Exception as e:
         logging.error(f"Album error: {e}")
@@ -393,6 +398,7 @@ async def forward_message(msg, chat_id):
                     await forward_album(group, chat_id)
 
             loop = asyncio.get_event_loop()
+            # ЗАТРИМКА 1 СЕКУНДА, ЩОБ УСПІТИ ЗІБРАТИ ВСЮ МЕДІАГРУПУ
             album_timers[msg.grouped_id] = loop.call_later(
                 3, lambda: asyncio.create_task(flush())
             )
