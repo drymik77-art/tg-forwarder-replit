@@ -459,9 +459,42 @@ async def poll_channels():
             for src in active_sources:
                 try:
                     entity = await client.get_entity(src)
-                    async for msg in client.iter_messages(entity, limit=1):
-                        if not is_processed(msg.chat_id, msg.id):
-                            await forward_message(msg, msg.chat_id)
+
+                    # Беремо лише ОСТАННЄ повідомлення
+                    async for last in client.iter_messages(entity, limit=1):
+
+                        # Якщо вже оброблено — пропускаємо
+                        if is_processed(last.chat_id, last.id):
+                            continue
+
+                        # ========================
+                        # CASE 1: ОСТАННІЙ ПОСТ — МЕДІАГРУПА
+                        # ========================
+                        if last.grouped_id:
+
+                            group_id = last.grouped_id
+                            group_msgs = []
+
+                            # Читаємо тільки для пошуку всіх елементів групи
+                            async for m in client.iter_messages(entity, limit=20):
+                                if m.grouped_id == group_id:
+                                    group_msgs.append(m)
+
+                            # Пересилаємо тільки групу — не інші пости!
+                            if group_msgs:
+                                group_msgs = sorted(group_msgs, key=lambda m: m.id)
+                                await forward_album(group_msgs, last.chat_id)
+
+                                for m in group_msgs:
+                                    mark_processed(m.chat_id, m.id)
+
+                            continue
+
+                        # ========================
+                        # CASE 2: ОСТАННІЙ ПОСТ — НЕ ГРУПА
+                        # ========================
+                        await forward_message(last, last.chat_id)
+
                 except Exception as e:
                     logging.warning(f"Poll issue for {src}: {e}")
 
@@ -470,6 +503,7 @@ async def poll_channels():
         except Exception as e:
             logging.error(f"Poll loop error: {e}")
             await asyncio.sleep(60)
+
 
 # -------------------------
 # Event handler (live updates)
